@@ -858,11 +858,21 @@ namespace nvhttp {
 
     auto current_appid = proc::proc.running();
     if (current_appid > 0) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 400);
-      tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
+      bool _allow_concurrent = false;
+      auto _appid_str = std::to_string(appid);
+      for (auto &_app : proc::proc.get_apps()) {
+        if (_app.id == _appid_str && _app.capture_mode == "window") {
+          _allow_concurrent = true;
+          break;
+        }
+      }
+      if (_allow_concurrent == false) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
 
-      return;
+        return;
+      }
     }
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));

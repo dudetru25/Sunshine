@@ -63,6 +63,8 @@ namespace proc {
     std::string output;
     std::string image_path;
     std::string id;
+    std::string capture_mode;
+    std::string window_match;
     bool elevated;
     bool auto_detach;
     bool wait_all;

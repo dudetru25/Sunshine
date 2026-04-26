@@ -751,6 +751,185 @@ namespace platf::dxgi {
     return 0;
   }
 
+  int display_base_t::init_d3d_device(const ::video::config_t &config) {
+    std::once_flag windows_cpp_once_flag;
+
+    std::call_once(windows_cpp_once_flag, []() {
+      DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+
+      typedef BOOL (*User32_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT value);
+
+      {
+        auto user32 = LoadLibraryA("user32.dll");
+        auto f = (User32_SetProcessDpiAwarenessContext) GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        if (f) {
+          f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+
+        FreeLibrary(user32);
+      }
+
+      {
+        MH_Initialize();
+        MH_CreateHookApi(L"win32u.dll", "NtGdiDdDDIGetCachedHybridQueryValue", (void *) NtGdiDdDDIGetCachedHybridQueryValueHook, nullptr);
+        MH_EnableHook(MH_ALL_HOOKS);
+      }
+    });
+
+    env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    env_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    HRESULT status;
+
+    status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+      return -1;
+    }
+
+    auto adapter_name = utf_utils::from_utf8(config::video.adapter_name);
+
+    adapter_t::pointer adapter_p;
+    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
+      dxgi::adapter_t adapter_tmp {adapter_p};
+
+      DXGI_ADAPTER_DESC1 adapter_desc;
+      adapter_tmp->GetDesc1(&adapter_desc);
+
+      if (!adapter_name.empty() && adapter_desc.Description != adapter_name) {
+        continue;
+      }
+
+      adapter = std::move(adapter_tmp);
+      break;
+    }
+
+    if (adapter == nullptr) {
+      BOOST_LOG(error) << "Failed to locate a GPU adapter"sv;
+      return -1;
+    }
+
+    D3D_FEATURE_LEVEL featureLevels[] {
+      D3D_FEATURE_LEVEL_11_1,
+      D3D_FEATURE_LEVEL_11_0,
+      D3D_FEATURE_LEVEL_10_1,
+      D3D_FEATURE_LEVEL_10_0,
+      D3D_FEATURE_LEVEL_9_3,
+      D3D_FEATURE_LEVEL_9_2,
+      D3D_FEATURE_LEVEL_9_1
+    };
+
+    status = adapter->QueryInterface(IID_IDXGIAdapter, (void **) &adapter_p);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to query IDXGIAdapter interface"sv;
+      return -1;
+    }
+
+    status = D3D11CreateDevice(
+      adapter_p,
+      D3D_DRIVER_TYPE_UNKNOWN,
+      nullptr,
+      D3D11_CREATE_DEVICE_FLAGS,
+      featureLevels,
+      sizeof(featureLevels) / sizeof(D3D_FEATURE_LEVEL),
+      D3D11_SDK_VERSION,
+      &device,
+      &feature_level,
+      &device_ctx
+    );
+
+    adapter_p->Release();
+
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to create D3D11 device [0x"sv << util::hex(status).to_string_view() << ']';
+      return -1;
+    }
+
+    DXGI_ADAPTER_DESC adapter_desc;
+    adapter->GetDesc(&adapter_desc);
+
+    auto description = utf_utils::to_utf8(adapter_desc.Description);
+    BOOST_LOG(info)
+      << std::endl
+      << "Device Description : " << description << std::endl
+      << "Device Vendor ID   : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
+      << "Device Device ID   : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
+      << "Device Video Mem   : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
+      << "Device Sys Mem     : "sv << adapter_desc.DedicatedSystemMemory / 1048576 << " MiB"sv << std::endl
+      << "Share Sys Mem      : "sv << adapter_desc.SharedSystemMemory / 1048576 << " MiB"sv << std::endl
+      << "Feature Level      : 0x"sv << util::hex(feature_level).to_string_view();
+
+    {
+      dxgi::dxgi_t dxgi;
+      status = device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      status = dxgi->SetGPUThreadPriority(7);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "Failed to increase capture GPU thread priority. Please run application as administrator for optimal performance.";
+      }
+    }
+
+    {
+      dxgi::dxgi1_t dxgi {};
+      status = device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      status = dxgi->SetMaximumFrameLatency(1);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "Failed to set maximum frame latency [0x"sv << util::hex(status).to_string_view() << ']';
+      }
+    }
+
+    client_frame_rate = config.framerate;
+    client_frame_rate_strict = {0, 0};
+    if (config.framerateX100 > 0) {
+      AVRational fps = ::video::framerateX100_to_rational(config.framerateX100);
+      client_frame_rate_strict = DXGI_RATIONAL {static_cast<UINT>(fps.num), static_cast<UINT>(fps.den)};
+    }
+
+    if (!timer || !*timer) {
+      BOOST_LOG(error) << "Uninitialized high precision timer";
+      return -1;
+    }
+
+    return 0;
+  }
+
+  int display_base_t::init_for_window(const ::video::config_t &config, HWND hwnd) {
+    if (init_d3d_device(config)) {
+      return -1;
+    }
+
+    RECT client_rect;
+    if (GetClientRect(hwnd, &client_rect) == false) {
+      BOOST_LOG(error) << "Failed to get window client rect"sv;
+      return -1;
+    }
+
+    width = client_rect.right - client_rect.left;
+    height = client_rect.bottom - client_rect.top;
+    width_before_rotation = width;
+    height_before_rotation = height;
+
+    offset_x = 0;
+    offset_y = 0;
+
+    display_refresh_rate = {static_cast<UINT>(config.framerate), 1};
+    display_refresh_rate_rounded = config.framerate;
+    display_rotation = DXGI_MODE_ROTATION_IDENTITY;
+
+    BOOST_LOG(info) << "Window capture size: "sv << width << 'x' << height;
+
+    return 0;
+  }
+
   bool display_base_t::is_hdr() {
     dxgi::output6_t output6 {};
 

@@ -603,6 +603,63 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e hwdevice_type);
 
   /**
+   * @brief Describes a capturable application window.
+   * Platform-specific handle is stored as an opaque string in `id`.
+   */
+  struct window_info_t {
+    std::string id;
+    std::string title;
+    std::string exe_name;
+    std::string exe_path;
+    int width;
+    int height;
+    bool visible;
+  };
+
+  /**
+   * @brief Lifecycle events for a captured window.
+   * Platform backends translate native events into these values.
+   */
+  enum class window_event_e {
+    closed,
+    minimized,
+    restored,
+    resized
+  };
+
+  /**
+   * @brief Enumerate visible, capturable application windows.
+   * @return A list of window descriptors. Empty on unsupported platforms.
+   */
+  std::vector<window_info_t> enumerate_windows();
+
+  /**
+   * @brief Create a display_t that captures a specific window instead of a monitor.
+   * @param hwdevice_type Selects RAM or VRAM capture path.
+   * @param window_id Opaque platform handle from window_info_t::id.
+   * @param config Stream configuration.
+   * @return A display_t instance, or nullptr if unsupported.
+   */
+  std::shared_ptr<display_t> window_display(mem_type_e hwdevice_type, const std::string &window_id, const video::config_t &config);
+
+  /**
+   * @brief Bring a window to the foreground so it receives keyboard input.
+   * @param window_id Opaque platform handle from window_info_t::id.
+   */
+  void focus_window(const std::string &window_id);
+
+  /**
+   * @brief Translate stream-relative coordinates to screen-absolute coordinates for a window.
+   * @param window_id Opaque platform handle from window_info_t::id.
+   * @param stream_x X coordinate in stream space (0..stream_width).
+   * @param stream_y Y coordinate in stream space (0..stream_height).
+   * @param stream_width Width of the stream in pixels.
+   * @param stream_height Height of the stream in pixels.
+   * @return Screen-absolute coordinates.
+   */
+  util::point_t window_stream_to_screen(const std::string &window_id, float stream_x, float stream_y, int stream_width, int stream_height);
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

@@ -158,6 +158,7 @@ namespace platf::dxgi {
   class display_base_t: public display_t {
   public:
     int init(const ::video::config_t &config, const std::string &display_name);
+    int init_for_window(const ::video::config_t &config, HWND hwnd);
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
 
@@ -238,6 +239,8 @@ namespace platf::dxgi {
     virtual std::vector<DXGI_FORMAT> get_supported_capture_formats() = 0;
 
   protected:
+    int init_d3d_device(const ::video::config_t &config);
+
     int get_pixel_pitch() {
       return (capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 : 4;
     }
@@ -341,6 +344,7 @@ namespace platf::dxgi {
 
   /**
    * Display duplicator that uses the Windows.Graphics.Capture API.
+   * Supports both monitor capture (existing) and per-window capture via HWND overload.
    */
   class wgc_capture_t {
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice uwp_device {nullptr};
@@ -352,16 +356,27 @@ namespace platf::dxgi {
     SRWLOCK frame_lock = SRWLOCK_INIT;
     CONDITION_VARIABLE frame_present_cv;
 
+    HWND target_hwnd {};
+    std::atomic<bool> window_closed {false};
+
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
+    void on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &sender, winrt::Windows::Foundation::IInspectable const &);
+
+    int init_common(display_base_t *display, const ::video::config_t &config);
 
   public:
     wgc_capture_t();
     ~wgc_capture_t();
 
     int init(display_base_t *display, const ::video::config_t &config);
+    int init(display_base_t *display, HWND hwnd, const ::video::config_t &config);
     capture_e next_frame(std::chrono::milliseconds timeout, ID3D11Texture2D **out, uint64_t &out_time);
     capture_e release_frame();
     int set_cursor_visible(bool);
+
+    bool is_window_capture() const { return target_hwnd != nullptr; }
+    bool is_window_closed() const { return window_closed.load(); }
+    HWND get_target_hwnd() const { return target_hwnd; }
   };
 
   /**
@@ -372,6 +387,7 @@ namespace platf::dxgi {
 
   public:
     int init(const ::video::config_t &config, const std::string &display_name);
+    int init(const ::video::config_t &config, const std::string &window_id, bool window_mode);
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
   };
@@ -384,6 +400,7 @@ namespace platf::dxgi {
 
   public:
     int init(const ::video::config_t &config, const std::string &display_name);
+    int init(const ::video::config_t &config, const std::string &window_id, bool window_mode);
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
   };

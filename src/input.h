@@ -23,6 +23,7 @@ namespace input {
   bool probe_gamepads();
 
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
+  void set_window_target(std::shared_ptr<input_t> &input, const std::string &window_id);
 
   struct touch_port_t: public platf::touch_port_t {
     int env_width;

@@ -193,6 +193,8 @@ namespace input {
 
     int32_t accumulated_vscroll_delta;
     int32_t accumulated_hscroll_delta;
+
+    std::string window_target;
   };
 
   /**
@@ -444,6 +446,10 @@ namespace input {
   void passthrough(std::shared_ptr<input_t> &input, PNV_REL_MOUSE_MOVE_PACKET packet) {
     if (!config::input.mouse) {
       return;
+    }
+
+    if (input->window_target.empty() == false) {
+      platf::focus_window(input->window_target);
     }
 
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
@@ -755,6 +761,10 @@ namespace input {
   void passthrough(std::shared_ptr<input_t> &input, PNV_KEYBOARD_PACKET packet) {
     if (!config::input.keyboard) {
       return;
+    }
+
+    if (input->window_target.empty() == false) {
+      platf::focus_window(input->window_target);
     }
 
     auto release = util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC;
@@ -1695,5 +1705,9 @@ namespace input {
                           100ms);
 
     return input;
+  }
+
+  void set_window_target(std::shared_ptr<input_t> &input, const std::string &window_id) {
+    input->window_target = window_id;
   }
 }  // namespace input

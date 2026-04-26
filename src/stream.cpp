@@ -406,6 +406,8 @@ namespace stream {
 
     std::uint32_t launch_session_id;
 
+    std::string window_target;
+
     safe::mail_raw_t::event_t<bool> shutdown_event;
     safe::signal_t controlEnd;
 
@@ -1869,8 +1871,13 @@ namespace stream {
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
+    auto video_config = session->config.monitor;
+    if (session->window_target.empty() == false) {
+      video_config.window_id = session->window_target;
+    }
+
     BOOST_LOG(debug) << "Start capturing Video"sv;
-    video::capture(session->mail, session->config.monitor, session);
+    video::capture(session->mail, video_config, session);
   }
 
   void audioThread(session_t *session) {
@@ -1962,6 +1969,26 @@ namespace stream {
 
     int start(session_t &session, const std::string &addr_string) {
       session.input = input::alloc(session.mail);
+
+      // Resolve window capture target if the current app is in window mode
+      auto _current_appid = proc::proc.running();
+      if (_current_appid > 0) {
+        auto _appid_str = std::to_string(_current_appid);
+        for (auto &_app : proc::proc.get_apps()) {
+          if (_app.id == _appid_str && _app.capture_mode == "window" && _app.window_match.empty() == false) {
+            auto _windows = platf::enumerate_windows();
+            for (auto &_win : _windows) {
+              if (_win.exe_name == _app.window_match || _win.title.find(_app.window_match) != std::string::npos) {
+                session.window_target = _win.id;
+                input::set_window_target(session.input, _win.id);
+                BOOST_LOG(info) << "Window capture target for session: "sv << _win.title << " ["sv << _win.id << ']';
+                break;
+              }
+            }
+            break;
+          }
+        }
+      }
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {

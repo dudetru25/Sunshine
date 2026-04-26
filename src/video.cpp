@@ -1186,7 +1186,13 @@ namespace video {
     // We try this twice, in case we still get an error on reinitialization
     for (int x = 0; x < 2; ++x) {
       disp.reset();
-      disp = platf::display(type, display_name, config);
+
+      if (config.window_id.empty() == false) {
+        disp = platf::window_display(type, config.window_id, config);
+      } else {
+        disp = platf::display(type, display_name, config);
+      }
+
       if (disp) {
         break;
       }

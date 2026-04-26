@@ -1642,6 +1642,37 @@ namespace confighttp {
    *
    * @api_examples{/api/browse?path=/home/user&type=directory| GET| null}
    */
+  void getWindows(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      auto windows = platf::enumerate_windows();
+
+      nlohmann::json output_tree;
+      nlohmann::json windows_array = nlohmann::json::array();
+      for (auto &w : windows) {
+        nlohmann::json entry;
+        entry["id"] = w.id;
+        entry["title"] = w.title;
+        entry["exe_name"] = w.exe_name;
+        entry["exe_path"] = w.exe_path;
+        entry["width"] = w.width;
+        entry["height"] = w.height;
+        entry["visible"] = w.visible;
+        windows_array.push_back(std::move(entry));
+      }
+      output_tree["windows"] = std::move(windows_array);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "GetWindows: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
   void browseDirectory(const resp_https_t &response, const req_https_t &request) {
     if (!authenticate(response, request)) {
       return;
@@ -1762,6 +1793,7 @@ namespace confighttp {
 
     // rest api
     server.resource["^/api/browse$"]["GET"] = browseDirectory;
+    server.resource["^/api/windows$"]["GET"] = getWindows;
     server.resource["^/api/apps$"]["GET"] = getApps;
     server.resource["^/api/apps$"]["POST"] = saveApp;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;

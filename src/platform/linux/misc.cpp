@@ -1091,6 +1091,21 @@ namespace platf {
     return nullptr;
   }
 
+  std::vector<window_info_t> enumerate_windows() {
+    return {};
+  }
+
+  std::shared_ptr<display_t> window_display(mem_type_e, const std::string &, const video::config_t &) {
+    return nullptr;
+  }
+
+  void focus_window(const std::string &) {
+  }
+
+  util::point_t window_stream_to_screen(const std::string &, float, float, int, int) {
+    return {0.0, 0.0};
+  }
+
   std::unique_ptr<deinit_t> init() {
     // enable low latency mode for AMD
     // https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/30039

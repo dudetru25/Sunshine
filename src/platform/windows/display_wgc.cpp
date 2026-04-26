@@ -78,7 +78,58 @@ namespace platf::dxgi {
   }
 
   /**
-   * @brief Initialize the Windows.Graphics.Capture backend.
+   * @brief Common WGC initialization shared between monitor and window capture.
+   * Called after `item` has been acquired via CreateForMonitor or CreateForWindow.
+   */
+  int wgc_capture_t::init_common(display_base_t *display, const ::video::config_t &config) {
+    if (config.dynamicRange) {
+      display->capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    } else {
+      display->capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
+
+    try {
+      frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      capture_session = frame_pool.CreateCaptureSession(item);
+      frame_pool.FrameArrived({this, &wgc_capture_t::on_frame_arrived});
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "Failed to create WGC capture session: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    }
+
+    if (target_hwnd) {
+      item.Closed({this, &wgc_capture_t::on_item_closed});
+    }
+
+    try {
+      if (winrt::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsBorderRequired")) {
+        capture_session.IsBorderRequired(false);
+      } else {
+        BOOST_LOG(warning) << "Can't disable colored border around capture area on this version of Windows";
+      }
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(warning) << "Failed to disable border around capture area: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+    }
+    try {
+      if (winrt::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"MinUpdateInterval")) {
+        capture_session.MinUpdateInterval(4ms);  // 250Hz
+      } else {
+        BOOST_LOG(warning) << "Can't set MinUpdateInterval on this version of Windows";
+      }
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(warning) << "Failed to set MinUpdateInterval: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+    }
+    try {
+      capture_session.StartCapture();
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "Failed to start capture: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    }
+    return 0;
+  }
+
+  /**
+   * @brief Initialize the Windows.Graphics.Capture backend for monitor capture.
    * @return 0 on success, -1 on failure.
    */
   int wgc_capture_t::init(display_base_t *display, const ::video::config_t &config) {
@@ -114,45 +165,53 @@ namespace platf::dxgi {
       return -1;
     }
 
-    if (config.dynamicRange) {
-      display->capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    } else {
-      display->capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    return init_common(display, config);
+  }
+
+  /**
+   * @brief Initialize the Windows.Graphics.Capture backend for window capture.
+   * @param hwnd The window handle to capture.
+   * @return 0 on success, -1 on failure.
+   */
+  int wgc_capture_t::init(display_base_t *display, HWND hwnd, const ::video::config_t &config) {
+    HRESULT status;
+    dxgi::dxgi_t dxgi;
+    winrt::com_ptr<::IInspectable> d3d_comhandle;
+    try {
+      if (!winrt::GraphicsCaptureSession::IsSupported()) {
+        BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows!"sv;
+        return -1;
+      }
+      if (FAILED(status = display->device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi))) {
+        BOOST_LOG(error) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+      if (FAILED(status = winrt::CreateDirect3D11DeviceFromDXGIDevice(*&dxgi, d3d_comhandle.put()))) {
+        BOOST_LOG(error) << "Failed to query WinRT DirectX interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "Failed to acquire WinRT device for window capture: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
     }
 
-    try {
-      frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
-      capture_session = frame_pool.CreateCaptureSession(item);
-      frame_pool.FrameArrived({this, &wgc_capture_t::on_frame_arrived});
-    } catch (winrt::hresult_error &e) {
-      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to create capture session: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+    uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
+    target_hwnd = hwnd;
+
+    auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+    if (interop_factory == nullptr ||
+        FAILED(status = interop_factory->CreateForWindow(hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+      BOOST_LOG(error) << "Failed to create WGC capture item for window: [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
     }
-    try {
-      if (winrt::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsBorderRequired")) {
-        capture_session.IsBorderRequired(false);
-      } else {
-        BOOST_LOG(warning) << "Can't disable colored border around capture area on this version of Windows";
-      }
-    } catch (winrt::hresult_error &e) {
-      BOOST_LOG(warning) << "Screen capture may not be fully supported on this device for this release of Windows: failed to disable border around capture area: [0x"sv << util::hex(e.code()).to_string_view() << ']';
-    }
-    try {
-      if (winrt::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"MinUpdateInterval")) {
-        capture_session.MinUpdateInterval(4ms);  // 250Hz
-      } else {
-        BOOST_LOG(warning) << "Can't set MinUpdateInterval on this version of Windows";
-      }
-    } catch (winrt::hresult_error &e) {
-      BOOST_LOG(warning) << "Screen capture may be capped to 60fps on this device for this release of Windows: failed to set MinUpdateInterval: [0x"sv << util::hex(e.code()).to_string_view() << ']';
-    }
-    try {
-      capture_session.StartCapture();
-    } catch (winrt::hresult_error &e) {
-      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to start capture: [0x"sv << util::hex(e.code()).to_string_view() << ']';
-      return -1;
-    }
-    return 0;
+
+    return init_common(display, config);
+  }
+
+  void wgc_capture_t::on_item_closed(winrt::GraphicsCaptureItem const &, winrt::IInspectable const &) {
+    BOOST_LOG(info) << "Captured window was closed"sv;
+    window_closed.store(true);
+    WakeConditionVariable(&frame_present_cv);
   }
 
   /**
@@ -188,12 +247,25 @@ namespace platf::dxgi {
    * @param out_time the timestamp of the frame just captured
    */
   capture_e wgc_capture_t::next_frame(std::chrono::milliseconds timeout, ID3D11Texture2D **out, uint64_t &out_time) {
+    if (window_closed.load()) {
+      return capture_e::error;
+    }
+
+    if (target_hwnd && IsIconic(target_hwnd)) {
+      return capture_e::timeout;
+    }
+
     // this CONSUMER runs in the capture thread
     release_frame();
 
     AcquireSRWLockExclusive(&frame_lock);
     if (produced_frame == nullptr && SleepConditionVariableSRW(&frame_present_cv, &frame_lock, timeout.count(), 0) == 0) {
       ReleaseSRWLockExclusive(&frame_lock);
+
+      if (window_closed.load()) {
+        return capture_e::error;
+      }
+
       if (GetLastError() == ERROR_TIMEOUT) {
         return capture_e::timeout;
       } else {
@@ -239,6 +311,16 @@ namespace platf::dxgi {
 
   int display_wgc_ram_t::init(const ::video::config_t &config, const std::string &display_name) {
     if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+      return -1;
+    }
+
+    texture.reset();
+    return 0;
+  }
+
+  int display_wgc_ram_t::init(const ::video::config_t &config, const std::string &window_id, bool) {
+    auto hwnd = reinterpret_cast<HWND>(std::stoull(window_id, nullptr, 16));
+    if (display_base_t::init_for_window(config, hwnd) || dup.init(this, hwnd, config)) {
       return -1;
     }
 
