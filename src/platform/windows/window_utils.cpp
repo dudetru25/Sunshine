@@ -1,12 +1,9 @@
 /**
  * @file src/platform/windows/window_utils.cpp
  * @brief Windows implementation of per-window capture utilities.
- * @author Miguel A. Lopez
- * @company Sunshine
- * @description Implements platf::enumerate_windows(), platf::window_display(),
- *   platf::focus_window(), and platf::window_stream_to_screen() for Windows.
- * @created 2026-04-26
- * @last_modified 2026-04-26
+ *
+ * Implements platf::enumerate_windows(), platf::window_display(),
+ * platf::focus_window(), and platf::window_stream_to_screen() for Windows.
  */
 // standard includes
 #include <sstream>

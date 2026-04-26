@@ -170,7 +170,9 @@ namespace platf::dxgi {
 
   /**
    * @brief Initialize the Windows.Graphics.Capture backend for window capture.
+   * @param display The display backend providing D3D11 device context.
    * @param hwnd The window handle to capture.
+   * @param config Stream configuration.
    * @return 0 on success, -1 on failure.
    */
   int wgc_capture_t::init(display_base_t *display, HWND hwnd, const ::video::config_t &config) {

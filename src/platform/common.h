@@ -621,10 +621,10 @@ namespace platf {
    * Platform backends translate native events into these values.
    */
   enum class window_event_e {
-    closed,
-    minimized,
-    restored,
-    resized
+    closed,     ///< The window was destroyed.
+    minimized,  ///< The window was minimized (iconic).
+    restored,   ///< The window was restored from minimized state.
+    resized     ///< The window changed dimensions.
   };
 
   /**
