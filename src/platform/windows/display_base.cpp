@@ -997,6 +997,116 @@ namespace platf::dxgi {
     }
   }
 
+  int display_base_t::init_for_window(const ::video::config_t &config, HWND hwnd) {
+    std::once_flag windows_cpp_once_flag;
+
+    std::call_once(windows_cpp_once_flag, []() {
+      DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+
+      typedef BOOL (*User32_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT value);
+
+      auto user32 = LoadLibraryA("user32.dll");
+      auto f = (User32_SetProcessDpiAwarenessContext) GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+      if (f) {
+        f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+      }
+      FreeLibrary(user32);
+    });
+
+    env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    env_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    RECT client_rect;
+    if (!GetClientRect(hwnd, &client_rect)) {
+      BOOST_LOG(error) << "Failed to get window client rect"sv;
+      return -1;
+    }
+
+    width = client_rect.right - client_rect.left;
+    height = client_rect.bottom - client_rect.top;
+
+    if (width <= 0 || height <= 0) {
+      BOOST_LOG(error) << "Window has invalid dimensions: "sv << width << 'x' << height;
+      return -1;
+    }
+
+    width_before_rotation = width;
+    height_before_rotation = height;
+    display_rotation = DXGI_MODE_ROTATION_IDENTITY;
+
+    offset_x = 0;
+    offset_y = 0;
+
+    HRESULT status;
+
+    status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+      return -1;
+    }
+
+    // Use the first available adapter for window capture
+    adapter_t::pointer adapter_p;
+    if (factory->EnumAdapters1(0, &adapter_p) == DXGI_ERROR_NOT_FOUND) {
+      BOOST_LOG(error) << "No DXGI adapters found"sv;
+      return -1;
+    }
+    adapter.reset(adapter_p);
+
+    // Get the first output for frame rate detection (not used for capture target)
+    dxgi::output_t::pointer output_p;
+    if (adapter->EnumOutputs(0, &output_p) != DXGI_ERROR_NOT_FOUND) {
+      output.reset(output_p);
+    }
+
+    D3D_FEATURE_LEVEL featureLevels[] {
+      D3D_FEATURE_LEVEL_11_1,
+      D3D_FEATURE_LEVEL_11_0,
+      D3D_FEATURE_LEVEL_10_1,
+      D3D_FEATURE_LEVEL_10_0,
+    };
+
+    IDXGIAdapter *raw_adapter = nullptr;
+    status = adapter->QueryInterface(IID_IDXGIAdapter, (void **) &raw_adapter);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to query IDXGIAdapter interface"sv;
+      return -1;
+    }
+
+    status = D3D11CreateDevice(
+      raw_adapter,
+      D3D_DRIVER_TYPE_UNKNOWN,
+      nullptr,
+      D3D11_CREATE_DEVICE_FLAGS,
+      featureLevels,
+      sizeof(featureLevels) / sizeof(D3D_FEATURE_LEVEL),
+      D3D11_SDK_VERSION,
+      &device,
+      &feature_level,
+      &device_ctx
+    );
+
+    raw_adapter->Release();
+
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Failed to create D3D11 device for window capture [0x"sv << util::hex(status).to_string_view() << ']';
+      return -1;
+    }
+
+    DXGI_ADAPTER_DESC adapter_desc;
+    adapter->GetDesc(&adapter_desc);
+
+    auto description = utf_utils::to_utf8(adapter_desc.Description);
+    BOOST_LOG(info)
+      << std::endl
+      << "Window Capture Device  : " << description << std::endl
+      << "Window Capture Size    : "sv << width << 'x' << height;
+
+    client_frame_rate = config.framerate;
+
+    return 0;
+  }
+
 }  // namespace platf::dxgi
 
 namespace platf {
@@ -1005,6 +1115,24 @@ namespace platf {
    * @param hwdevice_type enables possible use of hardware encoder
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+    // Window capture path: use WGC with HWND
+    if (!config.window_id.empty()) {
+      auto hwnd = reinterpret_cast<HWND>(std::stoull(config.window_id, nullptr, 16));
+      if (!IsWindow(hwnd)) {
+        BOOST_LOG(error) << "Window handle is no longer valid: "sv << config.window_id;
+        return nullptr;
+      }
+
+      if (hwdevice_type == mem_type_e::dxgi) {
+        auto disp = std::make_shared<dxgi::display_wgc_vram_t>();
+        if (!disp->init(config, hwnd)) {
+          return disp;
+        }
+      }
+      BOOST_LOG(error) << "Window capture requires VRAM (dxgi) device type"sv;
+      return nullptr;
+    }
+
     if (config::video.capture == "ddx" || config::video.capture.empty()) {
       if (hwdevice_type == mem_type_e::dxgi) {
         auto disp = std::make_shared<dxgi::display_ddup_vram_t>();

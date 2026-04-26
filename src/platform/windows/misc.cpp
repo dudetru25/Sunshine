@@ -1795,4 +1795,62 @@ namespace platf {
   std::string resolve_render_device() {
     return {};
   }
+
+  std::vector<window_info_t> enumerate_windows() {
+    std::vector<window_info_t> results;
+
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+      if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return TRUE;
+      }
+
+      int title_len = GetWindowTextLengthW(hwnd);
+      if (title_len == 0) {
+        return TRUE;
+      }
+
+      // Skip windows without a substantial title (likely system chrome)
+      std::wstring title_buf(title_len + 1, L'\0');
+      GetWindowTextW(hwnd, title_buf.data(), title_len + 1);
+      title_buf.resize(title_len);
+
+      DWORD pid = 0;
+      GetWindowThreadProcessId(hwnd, &pid);
+      if (pid == 0) {
+        return TRUE;
+      }
+
+      std::string exe_name;
+      HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+      if (proc) {
+        WCHAR path[MAX_PATH] = {};
+        DWORD path_size = MAX_PATH;
+        if (QueryFullProcessImageNameW(proc, 0, path, &path_size)) {
+          std::wstring wpath(path, path_size);
+          auto slash = wpath.find_last_of(L'\\');
+          std::wstring wname = (slash != std::wstring::npos) ? wpath.substr(slash + 1) : wpath;
+          // Convert to UTF-8
+          int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), (int) wname.size(), nullptr, 0, nullptr, nullptr);
+          exe_name.resize(utf8_len);
+          WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), (int) wname.size(), exe_name.data(), utf8_len, nullptr, nullptr);
+        }
+        CloseHandle(proc);
+      }
+
+      // Convert title to UTF-8
+      int utf8_len = WideCharToMultiByte(CP_UTF8, 0, title_buf.c_str(), (int) title_buf.size(), nullptr, 0, nullptr, nullptr);
+      std::string title(utf8_len, '\0');
+      WideCharToMultiByte(CP_UTF8, 0, title_buf.c_str(), (int) title_buf.size(), title.data(), utf8_len, nullptr, nullptr);
+
+      // Format HWND as hex string
+      std::stringstream ss;
+      ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(hwnd);
+
+      auto *results = reinterpret_cast<std::vector<window_info_t> *>(lparam);
+      results->push_back({ss.str(), std::move(title), std::move(exe_name)});
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&results));
+
+    return results;
+  }
 }  // namespace platf

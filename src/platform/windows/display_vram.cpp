@@ -1708,6 +1708,14 @@ namespace platf::dxgi {
     return 0;
   }
 
+  int display_wgc_vram_t::init(const ::video::config_t &config, HWND hwnd) {
+    if (display_base_t::init_for_window(config, hwnd) || dup.init(this, hwnd, config)) {
+      return -1;
+    }
+
+    return 0;
+  }
+
   std::shared_ptr<platf::img_t> display_vram_t::alloc_img() {
     auto img = std::make_shared<img_d3d_t>();
 

@@ -43,6 +43,8 @@ namespace video {
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
+
+    std::string window_id;  // HWND as hex string for window capture, empty = monitor capture
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

@@ -158,6 +158,7 @@ namespace platf::dxgi {
   class display_base_t: public display_t {
   public:
     int init(const ::video::config_t &config, const std::string &display_name);
+    int init_for_window(const ::video::config_t &config, HWND hwnd);
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
 
@@ -351,14 +352,19 @@ namespace platf::dxgi {
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame consumed_frame {nullptr};
     SRWLOCK frame_lock = SRWLOCK_INIT;
     CONDITION_VARIABLE frame_present_cv;
+    HWND target_hwnd = nullptr;
+    std::atomic<bool> window_closed {false};
 
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
+    void on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &, winrt::Windows::Foundation::IInspectable const &);
+    int init_common(display_base_t *display, const ::video::config_t &config);
 
   public:
     wgc_capture_t();
     ~wgc_capture_t();
 
     int init(display_base_t *display, const ::video::config_t &config);
+    int init(display_base_t *display, HWND hwnd, const ::video::config_t &config);
     capture_e next_frame(std::chrono::milliseconds timeout, ID3D11Texture2D **out, uint64_t &out_time);
     capture_e release_frame();
     int set_cursor_visible(bool);
@@ -384,6 +390,7 @@ namespace platf::dxgi {
 
   public:
     int init(const ::video::config_t &config, const std::string &display_name);
+    int init(const ::video::config_t &config, HWND hwnd);
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
   };

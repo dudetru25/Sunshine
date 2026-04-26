@@ -63,6 +63,8 @@ namespace proc {
     std::string output;
     std::string image_path;
     std::string id;
+    std::string capture_mode;
+    std::string window_match;
     bool elevated;
     bool auto_detach;
     bool wait_all;
@@ -93,6 +95,7 @@ namespace proc {
 
     const std::vector<ctx_t> &get_apps() const;
     std::vector<ctx_t> &get_apps();
+    const ctx_t &get_running_app() const;
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
     void terminate();

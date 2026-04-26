@@ -603,6 +603,21 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e hwdevice_type);
 
   /**
+   * @brief Describes a capturable application window.
+   */
+  struct window_info_t {
+    std::string id;        ///< Platform handle as string (HWND hex on Windows)
+    std::string title;     ///< Window title text
+    std::string exe_name;  ///< Executable filename (e.g. "notepad.exe")
+  };
+
+  /**
+   * @brief Enumerate visible, capturable top-level application windows.
+   * @return A list of window descriptors. Empty on unsupported platforms.
+   */
+  std::vector<window_info_t> enumerate_windows();
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

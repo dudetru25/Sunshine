@@ -10,10 +10,13 @@ extern "C" {
 }
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -27,6 +30,8 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "platform/common.h"
+#include "process.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
@@ -1102,6 +1107,47 @@ namespace rtsp_stream {
 
       respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
       return;
+    }
+
+    // Window capture: resolve target window before starting the session
+    auto &running_app = proc::proc.get_running_app();
+    if (running_app.capture_mode == "window" && !running_app.window_match.empty()) {
+      std::string match_lower = running_app.window_match;
+      std::transform(match_lower.begin(), match_lower.end(), match_lower.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+
+      BOOST_LOG(info) << "Window capture mode: searching for window matching \""sv << running_app.window_match << '"';
+
+      std::string resolved_hwnd;
+      for (int attempt = 0; attempt < 15; ++attempt) {
+        if (attempt > 0) {
+          std::this_thread::sleep_for(300ms);
+        }
+        auto windows = platf::enumerate_windows();
+        for (auto &win : windows) {
+          std::string exe_lower = win.exe_name;
+          std::transform(exe_lower.begin(), exe_lower.end(), exe_lower.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+          std::string title_lower = win.title;
+          std::transform(title_lower.begin(), title_lower.end(), title_lower.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+
+          if (exe_lower == match_lower || title_lower.find(match_lower) != std::string::npos) {
+            resolved_hwnd = win.id;
+            BOOST_LOG(info) << "Window capture target resolved: "sv << win.title << " ["sv << win.id << "] (exe: "sv << win.exe_name << ')';
+            break;
+          }
+        }
+        if (!resolved_hwnd.empty()) break;
+      }
+
+      if (resolved_hwnd.empty()) {
+        BOOST_LOG(error) << "Window capture failed: no window matching \""sv << running_app.window_match << "\" found after retries"sv;
+        respond(sock, session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
+        return;
+      }
+
+      config.monitor.window_id = resolved_hwnd;
     }
 
     auto stream_session = stream::session::alloc(config, session);
