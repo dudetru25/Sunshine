@@ -189,25 +189,26 @@ namespace platf::dxgi {
   int wgc_capture_t::init(display_base_t *display, HWND hwnd, const ::video::config_t &config) {
     BOOST_LOG(info) << "[WinCap] wgc_capture_t::init(window) starting";
 
-    // WinRT requires COM apartment initialization on the calling thread.
-    // The capture thread uses DDUP (no WinRT) for monitor capture, so it
-    // may not have COM initialized when we reach this window capture path.
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT co_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    BOOST_LOG(info) << "[WinCap] CoInitializeEx result: 0x"sv << util::hex(co_hr).to_string_view();
 
     HRESULT status;
     dxgi::dxgi_t dxgi;
     winrt::com_ptr<::IInspectable> d3d_comhandle;
     try {
+      BOOST_LOG(info) << "[WinCap] Checking GraphicsCaptureSession::IsSupported...";
       if (!winrt::GraphicsCaptureSession::IsSupported()) {
         BOOST_LOG(error) << "[WinCap] Screen capture is not supported on this device for this release of Windows!"sv;
         return -1;
       }
       BOOST_LOG(info) << "[WinCap] GraphicsCaptureSession supported";
+      BOOST_LOG(info) << "[WinCap] Querying IID_IDXGIDevice from display->device...";
       if (FAILED(status = display->device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi))) {
         BOOST_LOG(error) << "[WinCap] Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
       BOOST_LOG(info) << "[WinCap] DXGI interface acquired";
+      BOOST_LOG(info) << "[WinCap] Calling CreateDirect3D11DeviceFromDXGIDevice...";
       if (FAILED(status = winrt::CreateDirect3D11DeviceFromDXGIDevice(*&dxgi, d3d_comhandle.put()))) {
         BOOST_LOG(error) << "[WinCap] Failed to query WinRT DirectX interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
