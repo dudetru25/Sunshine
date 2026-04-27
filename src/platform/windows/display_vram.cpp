@@ -1835,21 +1835,40 @@ namespace platf::dxgi {
       return capture_e::error;
     }
 
-    HDC hdc = nullptr;
-    status = surface->GetDC(FALSE, &hdc);
+    HDC surfaceHdc = nullptr;
+    status = surface->GetDC(FALSE, &surfaceHdc);
     if (FAILED(status)) {
       surface->Release();
       BOOST_LOG(error) << "[WinCap] GetDC failed [0x"sv << util::hex(status).to_string_view() << ']';
       return capture_e::error;
     }
 
-    // Shift the HDC origin so the invisible DWM resize borders render
-    // off the left/top edge, and only the visible frame content lands at (0,0).
-    if (dwm_border_left > 0 || dwm_border_top > 0) {
-      SetViewportOrgEx(hdc, -dwm_border_left, -dwm_border_top, nullptr);
-    }
+    BOOL printResult;
 
-    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_RENDERFULLCONTENT);
+    if (dwm_border_left > 0 || dwm_border_top > 0) {
+      // PrintWindow ignores viewport/origin changes, so we render into a
+      // temporary memory DC at the full window size (including invisible
+      // DWM borders), then BitBlt only the visible region into the texture.
+      int fullW = (windowRect.right - windowRect.left);
+      int fullH = (windowRect.bottom - windowRect.top);
+
+      HDC memDc = CreateCompatibleDC(surfaceHdc);
+      HBITMAP memBmp = CreateCompatibleBitmap(surfaceHdc, fullW, fullH);
+      HGDIOBJ oldBmp = SelectObject(memDc, memBmp);
+
+      printResult = PrintWindow(target_hwnd, memDc, PW_RENDERFULLCONTENT);
+
+      if (printResult) {
+        BitBlt(surfaceHdc, 0, 0, width, height, memDc, dwm_border_left, dwm_border_top, SRCCOPY);
+      }
+
+      SelectObject(memDc, oldBmp);
+      DeleteObject(memBmp);
+      DeleteDC(memDc);
+    }
+    else {
+      printResult = PrintWindow(target_hwnd, surfaceHdc, PW_RENDERFULLCONTENT);
+    }
 
     RECT empty = {0, 0, 0, 0};
     surface->ReleaseDC(&empty);
