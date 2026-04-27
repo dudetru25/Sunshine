@@ -201,12 +201,8 @@ namespace platf::dxgi {
     dxgi::dxgi_t dxgi;
     winrt::com_ptr<::IInspectable> d3d_comhandle;
     try {
-      BOOST_LOG(info) << "[WinCap] Checking GraphicsCaptureSession::IsSupported...";
-      if (!winrt::GraphicsCaptureSession::IsSupported()) {
-        BOOST_LOG(error) << "[WinCap] Screen capture is not supported on this device for this release of Windows!"sv;
-        return -1;
-      }
-      BOOST_LOG(info) << "[WinCap] GraphicsCaptureSession supported";
+      // Skip IsSupported() -- it uses IGraphicsCaptureSessionStatics which
+      // throws bad_alloc on MinGW builds. We know WGC is available (Win10 1903+).
       BOOST_LOG(info) << "[WinCap] Querying IID_IDXGIDevice from display->device...";
       if (FAILED(status = display->device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi))) {
         BOOST_LOG(error) << "[WinCap] Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
