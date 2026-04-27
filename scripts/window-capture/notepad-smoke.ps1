@@ -115,11 +115,16 @@ switch ($Action) {
         # Launch in the interactive desktop session (SSH runs in session 0 which has no GUI).
         # Use a scheduled task with /IT flag to start in the logged-in user's session.
         $taskName = "SunshineSmoke_Notepad"
-        schtasks /Delete /TN $taskName /F 2>$null
-        schtasks /Create /TN $taskName /TR "notepad.exe" /SC ONCE /ST 00:00 /IT /F | Out-Null
-        schtasks /Run /TN $taskName | Out-Null
-        Start-Sleep -Milliseconds 500
-        schtasks /Delete /TN $taskName /F 2>$null
+        $oldPref = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & schtasks /Delete /TN $taskName /F *>$null
+        $ErrorActionPreference = $oldPref
+        & schtasks /Create /TN $taskName /TR "notepad.exe" /SC ONCE /ST 00:00 /IT /F *>$null
+        & schtasks /Run /TN $taskName *>$null
+        Start-Sleep -Milliseconds 1000
+        $ErrorActionPreference = "SilentlyContinue"
+        & schtasks /Delete /TN $taskName /F *>$null
+        $ErrorActionPreference = $oldPref
 
         $retries = 0
         $maxRetries = 30
