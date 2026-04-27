@@ -4,6 +4,7 @@
  */
 // platform includes
 #include <dxgi1_2.h>
+#include <roapi.h>
 
 // local includes
 #include "display.h"
@@ -191,6 +192,10 @@ namespace platf::dxgi {
 
     HRESULT co_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     BOOST_LOG(info) << "[WinCap] CoInitializeEx result: 0x"sv << util::hex(co_hr).to_string_view();
+
+    // Initialize WinRT runtime explicitly (required for MinGW in service context)
+    HRESULT ro_hr = RoInitialize(RO_INIT_MULTITHREADED);
+    BOOST_LOG(info) << "[WinCap] RoInitialize result: 0x"sv << util::hex(ro_hr).to_string_view();
 
     HRESULT status;
     dxgi::dxgi_t dxgi;
