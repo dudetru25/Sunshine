@@ -174,6 +174,9 @@ namespace platf::dxgi {
     int width_before_rotation;
     int height_before_rotation;
 
+    int dwm_border_left = 0;
+    int dwm_border_top = 0;
+
     int client_frame_rate;
     DXGI_RATIONAL client_frame_rate_strict;
 

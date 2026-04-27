@@ -8,6 +8,7 @@
 // platform includes
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
+#include <dwmapi.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -1721,12 +1722,25 @@ namespace platf::dxgi {
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
-    // Resize the full window (including title bar) to match the stream resolution.
-    // We capture the entire window, not just the client area, so outer size = stream size.
+    // Resize so the visible frame matches the stream resolution.
+    // GetWindowRect includes invisible DWM borders; we add those back so
+    // the visible content area ends up at the requested size.
     if (config.width > 0 && config.height > 0) {
-      BOOST_LOG(info) << "[WinCap] Resizing window to "sv << config.width << 'x' << config.height;
+      RECT wr, dr;
+      int borderH = 0, borderV = 0;
+      if (GetWindowRect(hwnd, &wr) &&
+          SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &dr, sizeof(dr)))) {
+        borderH = (dr.left - wr.left) + (wr.right - dr.right);
+        borderV = (dr.top - wr.top) + (wr.bottom - dr.bottom);
+      }
 
-      SetWindowPos(hwnd, nullptr, 0, 0, config.width, config.height,
+      int outerW = config.width + borderH;
+      int outerH = config.height + borderV;
+      BOOST_LOG(info) << "[WinCap] Resizing window: visible "sv << config.width << 'x' << config.height
+                      << ", outer "sv << outerW << 'x' << outerH
+                      << " (borders "sv << borderH << 'x' << borderV << ')';
+
+      SetWindowPos(hwnd, nullptr, 0, 0, outerW, outerH,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
       SetForegroundWindow(hwnd);
@@ -1785,13 +1799,23 @@ namespace platf::dxgi {
     }
     last_frame_time = std::chrono::steady_clock::now();
 
-    // Check if window is still valid and visible
+    // Check if window is still valid and visible using DWM extended frame bounds
+    RECT dwmRect;
     RECT windowRect;
+    int currentWidth, currentHeight;
+
     if (GetWindowRect(target_hwnd, &windowRect) == false) {
       return capture_e::timeout;
     }
-    int currentWidth = windowRect.right - windowRect.left;
-    int currentHeight = windowRect.bottom - windowRect.top;
+
+    if (SUCCEEDED(DwmGetWindowAttribute(target_hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &dwmRect, sizeof(dwmRect)))) {
+      currentWidth = dwmRect.right - dwmRect.left;
+      currentHeight = dwmRect.bottom - dwmRect.top;
+    }
+    else {
+      currentWidth = windowRect.right - windowRect.left;
+      currentHeight = windowRect.bottom - windowRect.top;
+    }
 
     if (currentWidth <= 0 || currentHeight <= 0) {
       return capture_e::timeout;
@@ -1817,6 +1841,12 @@ namespace platf::dxgi {
       surface->Release();
       BOOST_LOG(error) << "[WinCap] GetDC failed [0x"sv << util::hex(status).to_string_view() << ']';
       return capture_e::error;
+    }
+
+    // Shift the HDC origin so the invisible DWM resize borders render
+    // off the left/top edge, and only the visible frame content lands at (0,0).
+    if (dwm_border_left > 0 || dwm_border_top > 0) {
+      SetViewportOrgEx(hdc, -dwm_border_left, -dwm_border_top, nullptr);
     }
 
     BOOL printResult = PrintWindow(target_hwnd, hdc, PW_RENDERFULLCONTENT);
