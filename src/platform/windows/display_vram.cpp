@@ -1719,6 +1719,15 @@ namespace platf::dxgi {
     target_hwnd = hwnd;
     capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
+    // Use the client's negotiated resolution to avoid dimension mismatch.
+    // Content renders at (0,0); any padding is at the bottom/right.
+    if (config.width > 0 && config.height > 0) {
+      width = config.width;
+      height = config.height;
+      width_before_rotation = config.width;
+      height_before_rotation = config.height;
+    }
+
     // Create GDI-compatible texture for PrintWindow rendering
     D3D11_TEXTURE2D_DESC gdi_desc = {};
     gdi_desc.Width = width;
@@ -1764,7 +1773,7 @@ namespace platf::dxgi {
     }
     last_frame_time = std::chrono::steady_clock::now();
 
-    // Check if window dimensions changed
+    // Check if window is still valid and visible
     RECT clientRect;
     if (GetClientRect(target_hwnd, &clientRect) == false) {
       return capture_e::timeout;
@@ -1776,8 +1785,9 @@ namespace platf::dxgi {
       return capture_e::timeout;
     }
 
-    if (currentWidth != width || currentHeight != height) {
-      BOOST_LOG(info) << "[WinCap] Window resized: "sv << width << 'x' << height
+    // Reinit only if window grew larger than our texture
+    if (currentWidth > width || currentHeight > height) {
+      BOOST_LOG(info) << "[WinCap] Window exceeds capture area: "sv << width << 'x' << height
                       << " -> "sv << currentWidth << 'x' << currentHeight;
       return capture_e::reinit;
     }
