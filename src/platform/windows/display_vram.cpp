@@ -8,7 +8,6 @@
 // platform includes
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
-#include <dwmapi.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -22,6 +21,7 @@ extern "C" {
 // local includes
 #include "display.h"
 #include "misc.h"
+#include <dwmapi.h>
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_config.h"

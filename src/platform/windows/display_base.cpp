@@ -7,7 +7,6 @@
 #include <thread>
 
 // platform includes
-#include <dwmapi.h>
 #include <initguid.h>
 
 // lib includes
@@ -34,6 +33,7 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE: DWORD {
 
 #include "display.h"
 #include "misc.h"
+#include <dwmapi.h>
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
