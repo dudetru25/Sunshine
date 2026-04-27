@@ -188,6 +188,12 @@ namespace platf::dxgi {
    */
   int wgc_capture_t::init(display_base_t *display, HWND hwnd, const ::video::config_t &config) {
     BOOST_LOG(info) << "[WinCap] wgc_capture_t::init(window) starting";
+
+    // WinRT requires COM apartment initialization on the calling thread.
+    // The capture thread uses DDUP (no WinRT) for monitor capture, so it
+    // may not have COM initialized when we reach this window capture path.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     HRESULT status;
     dxgi::dxgi_t dxgi;
     winrt::com_ptr<::IInspectable> d3d_comhandle;
