@@ -1709,10 +1709,17 @@ namespace platf::dxgi {
   }
 
   int display_wgc_vram_t::init(const ::video::config_t &config, HWND hwnd) {
-    if (display_base_t::init_for_window(config, hwnd) || dup.init(this, hwnd, config)) {
+    BOOST_LOG(info) << "[WinCap] display_wgc_vram_t::init(hwnd) - calling init_for_window";
+    if (display_base_t::init_for_window(config, hwnd)) {
+      BOOST_LOG(error) << "[WinCap] display_base_t::init_for_window failed";
       return -1;
     }
-
+    BOOST_LOG(info) << "[WinCap] init_for_window succeeded, calling dup.init";
+    if (dup.init(this, hwnd, config)) {
+      BOOST_LOG(error) << "[WinCap] wgc_capture_t::init(window) failed";
+      return -1;
+    }
+    BOOST_LOG(info) << "[WinCap] display_wgc_vram_t fully initialized";
     return 0;
   }
 

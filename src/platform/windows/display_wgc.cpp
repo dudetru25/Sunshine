@@ -82,6 +82,7 @@ namespace platf::dxgi {
    * Called after `item` has been acquired via CreateForMonitor or CreateForWindow.
    */
   int wgc_capture_t::init_common(display_base_t *display, const ::video::config_t &config) {
+    BOOST_LOG(info) << "[WinCap] init_common() starting";
     if (config.dynamicRange) {
       display->capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     } else {
@@ -89,11 +90,21 @@ namespace platf::dxgi {
     }
 
     try {
+      BOOST_LOG(info) << "[WinCap] Creating frame pool (format="sv << display->capture_format << ", size="sv << item.Size().Width << 'x' << item.Size().Height << ')';
       frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      BOOST_LOG(info) << "[WinCap] Frame pool created, creating capture session...";
       capture_session = frame_pool.CreateCaptureSession(item);
+      BOOST_LOG(info) << "[WinCap] Capture session created, registering FrameArrived...";
       frame_pool.FrameArrived({this, &wgc_capture_t::on_frame_arrived});
+      BOOST_LOG(info) << "[WinCap] FrameArrived registered";
     } catch (winrt::hresult_error &e) {
-      BOOST_LOG(error) << "Failed to create WGC capture session: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      BOOST_LOG(error) << "[WinCap] Failed to create WGC capture session: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (std::exception &e) {
+      BOOST_LOG(error) << "[WinCap] std::exception in capture session creation: "sv << e.what();
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "[WinCap] Unknown exception in capture session creation";
       return -1;
     }
 
@@ -176,37 +187,76 @@ namespace platf::dxgi {
    * @return 0 on success, -1 on failure.
    */
   int wgc_capture_t::init(display_base_t *display, HWND hwnd, const ::video::config_t &config) {
+    BOOST_LOG(info) << "[WinCap] wgc_capture_t::init(window) starting";
     HRESULT status;
     dxgi::dxgi_t dxgi;
     winrt::com_ptr<::IInspectable> d3d_comhandle;
     try {
       if (!winrt::GraphicsCaptureSession::IsSupported()) {
-        BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows!"sv;
+        BOOST_LOG(error) << "[WinCap] Screen capture is not supported on this device for this release of Windows!"sv;
         return -1;
       }
+      BOOST_LOG(info) << "[WinCap] GraphicsCaptureSession supported";
       if (FAILED(status = display->device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi))) {
-        BOOST_LOG(error) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        BOOST_LOG(error) << "[WinCap] Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
+      BOOST_LOG(info) << "[WinCap] DXGI interface acquired";
       if (FAILED(status = winrt::CreateDirect3D11DeviceFromDXGIDevice(*&dxgi, d3d_comhandle.put()))) {
-        BOOST_LOG(error) << "Failed to query WinRT DirectX interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+        BOOST_LOG(error) << "[WinCap] Failed to query WinRT DirectX interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
+      BOOST_LOG(info) << "[WinCap] WinRT Direct3D device created";
     } catch (winrt::hresult_error &e) {
-      BOOST_LOG(error) << "Failed to acquire WinRT device for window capture: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      BOOST_LOG(error) << "[WinCap] WinRT exception acquiring device: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (std::exception &e) {
+      BOOST_LOG(error) << "[WinCap] std::exception acquiring device: "sv << e.what();
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "[WinCap] Unknown exception acquiring device";
       return -1;
     }
 
-    uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
+    try {
+      uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
+      BOOST_LOG(info) << "[WinCap] IDirect3DDevice acquired";
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "[WinCap] Failed to get IDirect3DDevice: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "[WinCap] Unknown exception getting IDirect3DDevice";
+      return -1;
+    }
+
     target_hwnd = hwnd;
 
-    auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-    if (interop_factory == nullptr ||
-        FAILED(status = interop_factory->CreateForWindow(hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
-      BOOST_LOG(error) << "Failed to create WGC capture item for window: [0x"sv << util::hex(status).to_string_view() << ']';
+    try {
+      BOOST_LOG(info) << "[WinCap] Getting IGraphicsCaptureItemInterop factory...";
+      auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+      if (interop_factory == nullptr) {
+        BOOST_LOG(error) << "[WinCap] IGraphicsCaptureItemInterop factory is null";
+        return -1;
+      }
+      BOOST_LOG(info) << "[WinCap] Calling CreateForWindow...";
+      status = interop_factory->CreateForWindow(hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item));
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "[WinCap] CreateForWindow failed: [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+      BOOST_LOG(info) << "[WinCap] CreateForWindow succeeded";
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "[WinCap] WinRT exception in CreateForWindow: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (std::exception &e) {
+      BOOST_LOG(error) << "[WinCap] std::exception in CreateForWindow: "sv << e.what();
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "[WinCap] Unknown exception in CreateForWindow";
       return -1;
     }
 
+    BOOST_LOG(info) << "[WinCap] Calling init_common...";
     return init_common(display, config);
   }
 

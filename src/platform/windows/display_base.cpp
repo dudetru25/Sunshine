@@ -998,20 +998,20 @@ namespace platf::dxgi {
   }
 
   int display_base_t::init_for_window(const ::video::config_t &config, HWND hwnd) {
-    std::once_flag windows_cpp_once_flag;
+    BOOST_LOG(info) << "[WinCap] init_for_window() starting for HWND "sv << (void *) hwnd;
 
-    std::call_once(windows_cpp_once_flag, []() {
+    {
       DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
-
       typedef BOOL (*User32_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT value);
-
       auto user32 = LoadLibraryA("user32.dll");
-      auto f = (User32_SetProcessDpiAwarenessContext) GetProcAddress(user32, "SetProcessDpiAwarenessContext");
-      if (f) {
-        f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+      if (user32) {
+        auto f = (User32_SetProcessDpiAwarenessContext) GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        if (f) {
+          f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+        FreeLibrary(user32);
       }
-      FreeLibrary(user32);
-    });
+    }
 
     env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     env_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
@@ -1117,20 +1117,37 @@ namespace platf {
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
     // Window capture path: use WGC with HWND
     if (!config.window_id.empty()) {
-      auto hwnd = reinterpret_cast<HWND>(std::stoull(config.window_id, nullptr, 16));
-      if (!IsWindow(hwnd)) {
-        BOOST_LOG(error) << "Window handle is no longer valid: "sv << config.window_id;
-        return nullptr;
-      }
+      BOOST_LOG(info) << "[WinCap] Entering window capture path for HWND: "sv << config.window_id;
+      try {
+        auto hwnd = reinterpret_cast<HWND>(std::stoull(config.window_id, nullptr, 16));
+        BOOST_LOG(info) << "[WinCap] Parsed HWND: "sv << (void *) hwnd;
+        if (!IsWindow(hwnd)) {
+          BOOST_LOG(error) << "[WinCap] Window handle is no longer valid: "sv << config.window_id;
+          return nullptr;
+        }
+        BOOST_LOG(info) << "[WinCap] IsWindow() confirmed valid";
 
-      if (hwdevice_type == mem_type_e::dxgi) {
+        if (hwdevice_type != mem_type_e::dxgi) {
+          BOOST_LOG(error) << "[WinCap] Window capture requires VRAM (dxgi) device type"sv;
+          return nullptr;
+        }
+
+        BOOST_LOG(info) << "[WinCap] Creating display_wgc_vram_t...";
         auto disp = std::make_shared<dxgi::display_wgc_vram_t>();
+        BOOST_LOG(info) << "[WinCap] Calling init(config, hwnd)...";
         if (!disp->init(config, hwnd)) {
+          BOOST_LOG(info) << "[WinCap] Window capture initialized successfully";
           return disp;
         }
+        BOOST_LOG(error) << "[WinCap] display_wgc_vram_t::init() failed";
+        return nullptr;
+      } catch (std::exception &e) {
+        BOOST_LOG(error) << "[WinCap] Exception in window capture setup: "sv << e.what();
+        return nullptr;
+      } catch (...) {
+        BOOST_LOG(error) << "[WinCap] Unknown exception in window capture setup";
+        return nullptr;
       }
-      BOOST_LOG(error) << "Window capture requires VRAM (dxgi) device type"sv;
-      return nullptr;
     }
 
     if (config::video.capture == "ddx" || config::video.capture.empty()) {
