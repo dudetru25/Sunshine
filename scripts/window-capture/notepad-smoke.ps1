@@ -117,13 +117,13 @@ switch ($Action) {
         $taskName = "SunshineSmoke_Notepad"
         $oldPref = $ErrorActionPreference
         $ErrorActionPreference = "SilentlyContinue"
-        & schtasks /Delete /TN $taskName /F *>$null
-        $ErrorActionPreference = $oldPref
-        & schtasks /Create /TN $taskName /TR "notepad.exe" /SC ONCE /ST 00:00 /IT /F *>$null
-        & schtasks /Run /TN $taskName *>$null
-        Start-Sleep -Milliseconds 1000
-        $ErrorActionPreference = "SilentlyContinue"
-        & schtasks /Delete /TN $taskName /F *>$null
+
+        & cmd /c "schtasks /Delete /TN $taskName /F >nul 2>&1"
+        & cmd /c "schtasks /Create /TN $taskName /TR notepad.exe /SC ONCE /ST 00:00 /IT /F >nul 2>&1"
+        & cmd /c "schtasks /Run /TN $taskName >nul 2>&1"
+        Start-Sleep -Milliseconds 1500
+        & cmd /c "schtasks /Delete /TN $taskName /F >nul 2>&1"
+
         $ErrorActionPreference = $oldPref
 
         $retries = 0
