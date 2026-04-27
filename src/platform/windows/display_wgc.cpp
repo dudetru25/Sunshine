@@ -7,6 +7,10 @@
 #include <roapi.h>
 #include <DispatcherQueue.h>
 
+// stdlib includes
+#include <atomic>
+#include <thread>
+
 // local includes
 #include "display.h"
 #include "misc.h"
@@ -240,78 +244,90 @@ namespace platf::dxgi {
 
     target_hwnd = hwnd;
 
-    // WGC CreateForWindow requires a DispatcherQueue on the calling thread
-    // to communicate with DWM. Without it, E_OUTOFMEMORY is returned.
-    DispatcherQueueOptions dqOptions = {};
-    dqOptions.dwSize = sizeof(DispatcherQueueOptions);
-    dqOptions.threadType = DQTYPE_THREAD_CURRENT;
-    dqOptions.apartmentType = DQTAT_COM_NONE;
+    // WGC CreateForWindow requires an STA thread with a message pump to
+    // communicate with DWM. Run it on a dedicated thread that pumps messages.
+    BOOST_LOG(info) << "[WinCap] Spawning STA thread for CreateForWindow...";
 
-    ABI::Windows::System::IDispatcherQueueController *dqController = nullptr;
-    HRESULT dq_hr = CreateDispatcherQueueController(dqOptions, &dqController);
-    BOOST_LOG(info) << "[WinCap] CreateDispatcherQueueController result: 0x"sv << util::hex(dq_hr).to_string_view();
+    struct CaptureInitResult {
+      winrt::GraphicsCaptureItem captureItem{nullptr};
+      HRESULT hr = E_FAIL;
+      std::atomic<bool> done{false};
+    };
 
-    // WGC CreateForWindow enforces user isolation -- a SYSTEM process cannot
-    // capture a window owned by a different user. Impersonate the window owner.
-    DWORD windowPid = 0;
-    GetWindowThreadProcessId(hwnd, &windowPid);
-    BOOST_LOG(info) << "[WinCap] Window owner PID: "sv << windowPid;
+    auto initResult = std::make_shared<CaptureInitResult>();
+    HWND captureHwnd = hwnd;
 
-    HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPid);
-    HANDLE userToken = nullptr;
-    bool impersonating = false;
-    if (processHandle) {
-      if (OpenProcessToken(processHandle, TOKEN_DUPLICATE | TOKEN_QUERY, &userToken)) {
-        HANDLE dupToken = nullptr;
-        if (DuplicateTokenEx(userToken, TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE, nullptr, SecurityImpersonation, TokenImpersonation, &dupToken)) {
-          if (SetThreadToken(nullptr, dupToken)) {
-            impersonating = true;
-            BOOST_LOG(info) << "[WinCap] Impersonating window owner (PID "sv << windowPid << ')';
-          } else {
-            BOOST_LOG(warning) << "[WinCap] SetThreadToken failed: "sv << GetLastError();
+    std::thread captureThread([initResult, captureHwnd]() {
+      CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+      RoInitialize(RO_INIT_MULTITHREADED);
+
+      DispatcherQueueOptions dqOptions = {};
+      dqOptions.dwSize = sizeof(DispatcherQueueOptions);
+      dqOptions.threadType = DQTYPE_THREAD_CURRENT;
+      dqOptions.apartmentType = DQTAT_COM_NONE;
+
+      ABI::Windows::System::IDispatcherQueueController *dqController = nullptr;
+      CreateDispatcherQueueController(dqOptions, &dqController);
+
+      // Impersonate the window owner in case SYSTEM cannot access user windows
+      DWORD windowPid = 0;
+      GetWindowThreadProcessId(captureHwnd, &windowPid);
+
+      HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPid);
+      bool impersonating = false;
+      if (processHandle) {
+        HANDLE userToken = nullptr;
+        if (OpenProcessToken(processHandle, TOKEN_DUPLICATE | TOKEN_QUERY, &userToken)) {
+          HANDLE dupToken = nullptr;
+          if (DuplicateTokenEx(userToken, TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE, nullptr, SecurityImpersonation, TokenImpersonation, &dupToken)) {
+            if (SetThreadToken(nullptr, dupToken)) {
+              impersonating = true;
+            }
+            CloseHandle(dupToken);
           }
-          CloseHandle(dupToken);
-        } else {
-          BOOST_LOG(warning) << "[WinCap] DuplicateTokenEx failed: "sv << GetLastError();
+          CloseHandle(userToken);
         }
-        CloseHandle(userToken);
-      } else {
-        BOOST_LOG(warning) << "[WinCap] OpenProcessToken failed: "sv << GetLastError();
+        CloseHandle(processHandle);
       }
-      CloseHandle(processHandle);
-    } else {
-      BOOST_LOG(warning) << "[WinCap] OpenProcess failed for PID "sv << windowPid << ": "sv << GetLastError();
+
+      try {
+        auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        winrt::GraphicsCaptureItem captureItem{nullptr};
+        initResult->hr = interop_factory->CreateForWindow(captureHwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(captureItem));
+        if (SUCCEEDED(initResult->hr)) {
+          initResult->captureItem = captureItem;
+        }
+      } catch (...) {
+        initResult->hr = E_FAIL;
+      }
+
+      if (impersonating) RevertToSelf();
+      initResult->done.store(true);
+
+      // Pump messages briefly to let WGC finalize any async setup
+      MSG msg;
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&msg);
+          DispatchMessage(&msg);
+        } else {
+          Sleep(1);
+        }
+      }
+
+      CoUninitialize();
+    });
+
+    captureThread.join();
+
+    if (FAILED(initResult->hr)) {
+      BOOST_LOG(error) << "[WinCap] CreateForWindow failed on STA thread: [0x"sv << util::hex(initResult->hr).to_string_view() << ']';
+      return -1;
     }
 
-    try {
-      BOOST_LOG(info) << "[WinCap] Getting IGraphicsCaptureItemInterop factory...";
-      auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-      if (interop_factory == nullptr) {
-        BOOST_LOG(error) << "[WinCap] IGraphicsCaptureItemInterop factory is null";
-        if (impersonating) RevertToSelf();
-        return -1;
-      }
-      BOOST_LOG(info) << "[WinCap] Calling CreateForWindow...";
-      status = interop_factory->CreateForWindow(hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item));
-      if (impersonating) RevertToSelf();
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "[WinCap] CreateForWindow failed: [0x"sv << util::hex(status).to_string_view() << ']';
-        return -1;
-      }
-      BOOST_LOG(info) << "[WinCap] CreateForWindow succeeded";
-    } catch (winrt::hresult_error &e) {
-      if (impersonating) RevertToSelf();
-      BOOST_LOG(error) << "[WinCap] WinRT exception in CreateForWindow: [0x"sv << util::hex(e.code()).to_string_view() << ']';
-      return -1;
-    } catch (std::exception &e) {
-      if (impersonating) RevertToSelf();
-      BOOST_LOG(error) << "[WinCap] std::exception in CreateForWindow: "sv << e.what();
-      return -1;
-    } catch (...) {
-      if (impersonating) RevertToSelf();
-      BOOST_LOG(error) << "[WinCap] Unknown exception in CreateForWindow";
-      return -1;
-    }
+    item = initResult->captureItem;
+    BOOST_LOG(info) << "[WinCap] CreateForWindow succeeded on STA thread";
 
     BOOST_LOG(info) << "[WinCap] Calling init_common...";
     return init_common(display, config);
