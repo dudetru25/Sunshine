@@ -1825,6 +1825,30 @@ namespace platf::dxgi {
 
     BOOL printResult = PrintWindow(target_hwnd, hdc, PW_CLIENTONLY);
 
+    // Draw the system cursor if it's within the target window's client area
+    if (cursor_visible) {
+      CURSORINFO ci = {};
+      ci.cbSize = sizeof(ci);
+      if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
+        POINT cursor_pos = ci.ptScreenPos;
+        ScreenToClient(target_hwnd, &cursor_pos);
+
+        if (cursor_pos.x >= 0 && cursor_pos.x < width &&
+            cursor_pos.y >= 0 && cursor_pos.y < height) {
+          ICONINFO icon_info = {};
+          if (GetIconInfo(ci.hCursor, &icon_info)) {
+            DrawIconEx(hdc,
+                       cursor_pos.x - icon_info.xHotspot,
+                       cursor_pos.y - icon_info.yHotspot,
+                       ci.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
+
+            if (icon_info.hbmMask) DeleteObject(icon_info.hbmMask);
+            if (icon_info.hbmColor) DeleteObject(icon_info.hbmColor);
+          }
+        }
+      }
+    }
+
     RECT empty = {0, 0, 0, 0};
     surface->ReleaseDC(&empty);
     surface->Release();
