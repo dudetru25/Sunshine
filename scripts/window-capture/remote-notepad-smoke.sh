@@ -129,7 +129,15 @@ do_stream() {
         bail "Moonlight not found at $MOONLIGHT_BIN. Install Moonlight or set MOONLIGHT_BIN."
     fi
 
-    "$MOONLIGHT_BIN" stream "$DEV3_IP" "$SUNSHINE_APP_NAME" &
+    # Window-capture streams default to absolute mouse + windowed mode.
+    # These are NOT shortcuts the user should need -- they're the natural UX.
+    # Stock Moonlight emergency overrides if something goes wrong:
+    #   Ctrl+Alt+Shift+M  toggle absolute/relative mouse
+    #   Ctrl+Alt+Shift+C  toggle cursor visibility
+    "$MOONLIGHT_BIN" stream "$DEV3_IP" "$SUNSHINE_APP_NAME" \
+        --absolute-mouse \
+        --display-mode windowed \
+        --quit-after &
     MOONLIGHT_PID=$!
     log "Moonlight started (PID: $MOONLIGHT_PID)"
     log "Stream running. Press Ctrl+C to disconnect."
