@@ -1722,25 +1722,13 @@ namespace platf::dxgi {
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
-    // Resize so the visible frame matches the stream resolution.
-    // GetWindowRect includes invisible DWM borders; we add those back so
-    // the visible content area ends up at the requested size.
+    // Resize the window to match the stream resolution.
+    // With PrintWindow flag 0, the full window (including frame) renders at (0,0),
+    // so the outer window size should match the capture texture size.
     if (config.width > 0 && config.height > 0) {
-      RECT wr, dr;
-      int borderH = 0, borderV = 0;
-      if (GetWindowRect(hwnd, &wr) &&
-          SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &dr, sizeof(dr)))) {
-        borderH = (dr.left - wr.left) + (wr.right - dr.right);
-        borderV = (dr.top - wr.top) + (wr.bottom - dr.bottom);
-      }
+      BOOST_LOG(info) << "[WinCap] Resizing window to "sv << config.width << 'x' << config.height;
 
-      int outerW = config.width + borderH;
-      int outerH = config.height + borderV;
-      BOOST_LOG(info) << "[WinCap] Resizing window: visible "sv << config.width << 'x' << config.height
-                      << ", outer "sv << outerW << 'x' << outerH
-                      << " (borders "sv << borderH << 'x' << borderV << ')';
-
-      SetWindowPos(hwnd, nullptr, 0, 0, outerW, outerH,
+      SetWindowPos(hwnd, nullptr, 0, 0, config.width, config.height,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
       SetForegroundWindow(hwnd);
@@ -1799,23 +1787,13 @@ namespace platf::dxgi {
     }
     last_frame_time = std::chrono::steady_clock::now();
 
-    // Check if window is still valid and visible using DWM extended frame bounds
-    RECT dwmRect;
+    // Check if window is still valid and visible
     RECT windowRect;
-    int currentWidth, currentHeight;
-
     if (GetWindowRect(target_hwnd, &windowRect) == false) {
       return capture_e::timeout;
     }
-
-    if (SUCCEEDED(DwmGetWindowAttribute(target_hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &dwmRect, sizeof(dwmRect)))) {
-      currentWidth = dwmRect.right - dwmRect.left;
-      currentHeight = dwmRect.bottom - dwmRect.top;
-    }
-    else {
-      currentWidth = windowRect.right - windowRect.left;
-      currentHeight = windowRect.bottom - windowRect.top;
-    }
+    int currentWidth = windowRect.right - windowRect.left;
+    int currentHeight = windowRect.bottom - windowRect.top;
 
     if (currentWidth <= 0 || currentHeight <= 0) {
       return capture_e::timeout;
@@ -1843,32 +1821,11 @@ namespace platf::dxgi {
       return capture_e::error;
     }
 
-    BOOL printResult;
-
-    if (dwm_border_left > 0 || dwm_border_top > 0) {
-      // PrintWindow ignores viewport/origin changes, so we render into a
-      // temporary memory DC at the full window size (including invisible
-      // DWM borders), then BitBlt only the visible region into the texture.
-      int fullW = (windowRect.right - windowRect.left);
-      int fullH = (windowRect.bottom - windowRect.top);
-
-      HDC memDc = CreateCompatibleDC(surfaceHdc);
-      HBITMAP memBmp = CreateCompatibleBitmap(surfaceHdc, fullW, fullH);
-      HGDIOBJ oldBmp = SelectObject(memDc, memBmp);
-
-      printResult = PrintWindow(target_hwnd, memDc, PW_RENDERFULLCONTENT);
-
-      if (printResult) {
-        BitBlt(surfaceHdc, 0, 0, width, height, memDc, dwm_border_left, dwm_border_top, SRCCOPY);
-      }
-
-      SelectObject(memDc, oldBmp);
-      DeleteObject(memBmp);
-      DeleteDC(memDc);
-    }
-    else {
-      printResult = PrintWindow(target_hwnd, surfaceHdc, PW_RENDERFULLCONTENT);
-    }
+    // Use flag 0 instead of PW_RENDERFULLCONTENT. Flag 0 sends WM_PRINT
+    // directly to the window, which renders at (0,0) without DWM surface
+    // offset issues. PW_RENDERFULLCONTENT captures the DWM redirected bitmap
+    // which has invisible border offsets that cause left-side clipping.
+    BOOL printResult = PrintWindow(target_hwnd, surfaceHdc, 0);
 
     RECT empty = {0, 0, 0, 0};
     surface->ReleaseDC(&empty);

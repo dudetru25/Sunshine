@@ -1023,31 +1023,8 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // On Windows 10/11, GetWindowRect includes invisible resize borders (extended frame).
-    // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) returns the visible frame.
-    // The difference is the invisible border that PrintWindow(PW_RENDERFULLCONTENT) includes.
-    RECT dwm_rect = window_rect;
-    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &dwm_rect, sizeof(dwm_rect)))) {
-      dwm_border_left = dwm_rect.left - window_rect.left;
-      dwm_border_top = dwm_rect.top - window_rect.top;
-
-      int dwm_border_right = window_rect.right - dwm_rect.right;
-      int dwm_border_bottom = window_rect.bottom - dwm_rect.bottom;
-
-      BOOST_LOG(info) << "[WinCap] DWM frame insets: left="sv << dwm_border_left
-                      << " top="sv << dwm_border_top
-                      << " right="sv << dwm_border_right
-                      << " bottom="sv << dwm_border_bottom;
-
-      width = dwm_rect.right - dwm_rect.left;
-      height = dwm_rect.bottom - dwm_rect.top;
-    }
-    else {
-      dwm_border_left = 0;
-      dwm_border_top = 0;
-      width = window_rect.right - window_rect.left;
-      height = window_rect.bottom - window_rect.top;
-    }
+    width = window_rect.right - window_rect.left;
+    height = window_rect.bottom - window_rect.top;
 
     if (width <= 0 || height <= 0) {
       BOOST_LOG(error) << "Window has invalid dimensions: "sv << width << 'x' << height;
