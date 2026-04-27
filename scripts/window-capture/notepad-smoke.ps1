@@ -100,69 +100,23 @@ switch ($Action) {
     }
 
     "launch" {
-        $existing = Find-NotepadWindow
-        if ($existing) {
+        # NOTE: Pre-launching from SSH is unreliable because SSH runs in session 0 (no GUI).
+        # Sunshine handles the actual app launch when Moonlight connects.
+        # This action just checks if Notepad is already running in the interactive session.
+        $win = Find-NotepadWindow
+        if ($win) {
             Write-JsonResult @{
-                status = "already_running"
-                hwnd   = $existing["hwnd"]
-                title  = $existing["title"]
-                exe    = $existing["exe"]
-                pid    = $existing["pid"]
+                status = "running"
+                hwnd   = $win["hwnd"]
+                title  = $win["title"]
+                exe    = $win["exe"]
+                pid    = $win["pid"]
             }
-            return
-        }
-
-        # Launch in the interactive desktop session (SSH runs in session 0 which has no GUI).
-        # Use a scheduled task with /IT flag to start in the logged-in user's session.
-        $taskName = "SunshineSmoke_Notepad"
-        $oldPref = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-
-        & cmd /c "schtasks /Delete /TN $taskName /F >nul 2>&1"
-        & cmd /c "schtasks /Create /TN $taskName /TR notepad.exe /SC ONCE /ST 00:00 /IT /F >nul 2>&1"
-        & cmd /c "schtasks /Run /TN $taskName >nul 2>&1"
-        Start-Sleep -Milliseconds 1500
-        & cmd /c "schtasks /Delete /TN $taskName /F >nul 2>&1"
-
-        $ErrorActionPreference = $oldPref
-
-        $retries = 0
-        $maxRetries = 30
-        $win = $null
-
-        while ($retries -lt $maxRetries) {
-            Start-Sleep -Milliseconds 500
-            $win = Find-NotepadWindow
-            if ($win) { break }
-            $retries++
-            if ($retries % 5 -eq 0) {
-                $allNotepad = Get-Process -Name "notepad" -ErrorAction SilentlyContinue
-                $handleInfo = if ($allNotepad) {
-                    ($allNotepad | ForEach-Object { "pid=$($_.Id) hwnd=$($_.MainWindowHandle) title='$($_.MainWindowTitle)'" }) -join "; "
-                } else { "no notepad processes" }
-                Write-Host "[debug] retry $retries/$maxRetries - $handleInfo" -ForegroundColor Yellow
-            }
-        }
-
-        if ($win -eq $null) {
-            $allNotepad = Get-Process -Name "notepad" -ErrorAction SilentlyContinue
-            $debugInfo = if ($allNotepad) {
-                ($allNotepad | ForEach-Object { "pid=$($_.Id) hwnd=$($_.MainWindowHandle)" }) -join "; "
-            } else { "no notepad processes found" }
+        } else {
             Write-JsonResult @{
-                status  = "error"
-                message = "Notepad launched but window not found after $maxRetries retries. Debug: $debugInfo"
-                pid     = $proc.Id.ToString()
+                status  = "not_running"
+                message = "Notepad is not running. Sunshine will launch it when Moonlight connects to the app."
             }
-            exit 1
-        }
-
-        Write-JsonResult @{
-            status = "launched"
-            hwnd   = $win["hwnd"]
-            title  = $win["title"]
-            exe    = $win["exe"]
-            pid    = $win["pid"]
         }
     }
 

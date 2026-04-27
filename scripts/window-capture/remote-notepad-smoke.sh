@@ -144,7 +144,8 @@ do_teardown() {
 }
 
 do_full() {
-    log "=== Full smoke test: sync -> inject -> launch -> stream ==="
+    log "=== Full smoke test: sync -> inject -> stream ==="
+    log "(Sunshine launches the app when Moonlight connects -- no pre-launch needed)"
     echo ""
 
     check_ssh
@@ -159,11 +160,13 @@ do_full() {
     do_inject
     echo ""
 
-    do_launch
-    echo ""
-
-    log "Waiting 2s for Sunshine to pick up the app..."
-    sleep 2
+    log "Restarting SunshineService so it picks up the new app entry..."
+    ssh "${DEV3_HOST}" "net stop SunshineService 2>nul & net start SunshineService" 2>&1 || {
+        log "Service restart may need admin. Trying PowerShell..."
+        ssh "${DEV3_HOST}" "powershell.exe -Command \"Restart-Service SunshineService -Force\"" 2>&1 || true
+    }
+    log "Waiting 3s for Sunshine to start..."
+    sleep 3
 
     do_stream
 }
