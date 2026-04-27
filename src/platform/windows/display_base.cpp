@@ -1115,7 +1115,7 @@ namespace platf {
    * @param hwdevice_type enables possible use of hardware encoder
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
-    // Window capture path: use WGC with HWND
+    // Window capture path: use DDUP with window-region crop
     if (!config.window_id.empty()) {
       BOOST_LOG(info) << "[WinCap] Entering window capture path for HWND: "sv << config.window_id;
       try {
@@ -1132,14 +1132,13 @@ namespace platf {
           return nullptr;
         }
 
-        BOOST_LOG(info) << "[WinCap] Creating display_wgc_vram_t...";
-        auto disp = std::make_shared<dxgi::display_wgc_vram_t>();
-        BOOST_LOG(info) << "[WinCap] Calling init(config, hwnd)...";
-        if (!disp->init(config, hwnd)) {
-          BOOST_LOG(info) << "[WinCap] Window capture initialized successfully";
+        BOOST_LOG(info) << "[WinCap] Creating display_ddup_window_vram_t (DDUP + crop)...";
+        auto disp = std::make_shared<dxgi::display_ddup_window_vram_t>();
+        if (!disp->init(config, display_name, hwnd)) {
+          BOOST_LOG(info) << "[WinCap] Window capture (DDUP + crop) initialized successfully";
           return disp;
         }
-        BOOST_LOG(error) << "[WinCap] display_wgc_vram_t::init() failed";
+        BOOST_LOG(error) << "[WinCap] display_ddup_window_vram_t::init() failed";
         return nullptr;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "[WinCap] Exception in window capture setup: "sv << e.what();
