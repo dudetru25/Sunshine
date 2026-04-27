@@ -1714,10 +1714,12 @@ namespace platf::dxgi {
 
     target_hwnd = hwnd;
 
-    // Strip minimize/maximize/close buttons so only the Mac-side window chrome shows controls.
+    // Strip window chrome that PrintWindow flag 0 renders in classic Win32 style:
+    // - WS_THICKFRAME: removes the thick resize border (Win7-looking frame)
+    // - WS_MINIMIZEBOX/MAXIMIZEBOX/SYSMENU: removes buttons (Mac provides its own)
     // Keep WS_CAPTION for the title bar (app name, menus, tabs).
     DWORD style = GetWindowLong(hwnd, GWL_STYLE);
-    style &= ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+    style &= ~(WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
     SetWindowLong(hwnd, GWL_STYLE, style);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
