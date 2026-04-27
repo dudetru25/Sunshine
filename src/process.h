@@ -65,6 +65,7 @@ namespace proc {
     std::string id;
     std::string capture_mode;
     std::string window_match;
+    std::string window_resolution;
     bool elevated;
     bool auto_detach;
     bool wait_all;

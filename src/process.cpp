@@ -656,6 +656,7 @@ namespace proc {
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
         auto capture_mode = app_node.get_optional<std::string>("capture-mode"s);
         auto window_match = app_node.get_optional<std::string>("window-match"s);
+        auto window_resolution = app_node.get_optional<std::string>("window-resolution"s);
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -727,6 +728,7 @@ namespace proc {
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(5)};
         ctx.capture_mode = capture_mode.value_or("");
         ctx.window_match = window_match.value_or("");
+        ctx.window_resolution = window_resolution.value_or("");
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {

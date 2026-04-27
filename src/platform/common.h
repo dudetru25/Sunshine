@@ -618,6 +618,15 @@ namespace platf {
   std::vector<window_info_t> enumerate_windows();
 
   /**
+   * @brief Get the client area dimensions of a window by its platform handle string.
+   * @param window_id Platform handle as hex string (e.g. HWND on Windows).
+   * @param out_width Receives the client width in pixels.
+   * @param out_height Receives the client height in pixels.
+   * @return true on success, false if the window is invalid or unsupported.
+   */
+  bool get_window_client_size(const std::string &window_id, int &out_width, int &out_height);
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

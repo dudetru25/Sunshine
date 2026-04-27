@@ -1711,24 +1711,38 @@ namespace platf::dxgi {
   int display_window_vram_t::init(const ::video::config_t &config, HWND hwnd) {
     BOOST_LOG(info) << "[WinCap] Initializing PrintWindow capture for HWND "sv << (void *) hwnd;
 
+    target_hwnd = hwnd;
+
+    // Resize the window's client area to match the stream resolution.
+    // This ensures PrintWindow fills the entire capture texture with no padding.
+    if (config.width > 0 && config.height > 0) {
+      RECT desired_client = {0, 0, config.width, config.height};
+      DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+      DWORD ex_style = GetWindowLong(hwnd, GWL_EXSTYLE);
+      BOOL has_menu = (GetMenu(hwnd) != nullptr) ? TRUE : FALSE;
+
+      AdjustWindowRectEx(&desired_client, style, has_menu, ex_style);
+
+      int outer_w = desired_client.right - desired_client.left;
+      int outer_h = desired_client.bottom - desired_client.top;
+
+      BOOST_LOG(info) << "[WinCap] Resizing window to client area "sv
+                      << config.width << 'x' << config.height
+                      << " (outer "sv << outer_w << 'x' << outer_h << ')';
+
+      SetWindowPos(hwnd, nullptr, 0, 0, outer_w, outer_h,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
     if (display_base_t::init_for_window(config, hwnd)) {
       BOOST_LOG(error) << "[WinCap] display_base_t::init_for_window failed"sv;
       return -1;
     }
 
-    target_hwnd = hwnd;
     capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    // Use the client's negotiated resolution to avoid dimension mismatch.
-    // Content renders at (0,0); any padding is at the bottom/right.
-    if (config.width > 0 && config.height > 0) {
-      width = config.width;
-      height = config.height;
-      width_before_rotation = config.width;
-      height_before_rotation = config.height;
-    }
-
-    // Create GDI-compatible texture for PrintWindow rendering
     D3D11_TEXTURE2D_DESC gdi_desc = {};
     gdi_desc.Width = width;
     gdi_desc.Height = height;
@@ -1785,9 +1799,8 @@ namespace platf::dxgi {
       return capture_e::timeout;
     }
 
-    // Reinit only if window grew larger than our texture
-    if (currentWidth > width || currentHeight > height) {
-      BOOST_LOG(info) << "[WinCap] Window exceeds capture area: "sv << width << 'x' << height
+    if (currentWidth != width || currentHeight != height) {
+      BOOST_LOG(info) << "[WinCap] Window size changed: "sv << width << 'x' << height
                       << " -> "sv << currentWidth << 'x' << currentHeight;
       return capture_e::reinit;
     }

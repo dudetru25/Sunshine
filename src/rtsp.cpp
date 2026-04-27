@@ -1148,6 +1148,29 @@ namespace rtsp_stream {
       }
 
       config.monitor.window_id = resolved_hwnd;
+
+      // Per-app resolution override for window capture
+      if (running_app.window_resolution == "auto") {
+        int win_w = 0, win_h = 0;
+        if (platf::get_window_client_size(resolved_hwnd, win_w, win_h)) {
+          BOOST_LOG(info) << "Window capture resolution override (auto): "sv
+                          << config.monitor.width << 'x' << config.monitor.height
+                          << " -> "sv << win_w << 'x' << win_h;
+          config.monitor.width = win_w;
+          config.monitor.height = win_h;
+        }
+      } else if (running_app.window_resolution.find('x') != std::string::npos) {
+        auto sep = running_app.window_resolution.find('x');
+        int res_w = std::stoi(running_app.window_resolution.substr(0, sep));
+        int res_h = std::stoi(running_app.window_resolution.substr(sep + 1));
+        if (res_w > 0 && res_h > 0) {
+          BOOST_LOG(info) << "Window capture resolution override (explicit): "sv
+                          << config.monitor.width << 'x' << config.monitor.height
+                          << " -> "sv << res_w << 'x' << res_h;
+          config.monitor.width = res_w;
+          config.monitor.height = res_h;
+        }
+      }
     }
 
     auto stream_session = stream::session::alloc(config, session);

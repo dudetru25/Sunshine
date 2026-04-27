@@ -1853,4 +1853,21 @@ namespace platf {
 
     return results;
   }
+  bool get_window_client_size(const std::string &window_id, int &out_width, int &out_height) {
+    try {
+      auto hwnd = reinterpret_cast<HWND>(std::stoull(window_id, nullptr, 16));
+      if (IsWindow(hwnd) == FALSE) {
+        return false;
+      }
+      RECT rect;
+      if (GetClientRect(hwnd, &rect) == FALSE) {
+        return false;
+      }
+      out_width = rect.right - rect.left;
+      out_height = rect.bottom - rect.top;
+      return out_width > 0 && out_height > 0;
+    } catch (...) {
+      return false;
+    }
+  }
 }  // namespace platf
