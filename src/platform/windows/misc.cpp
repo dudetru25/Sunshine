@@ -1860,7 +1860,7 @@ namespace platf {
         return false;
       }
       RECT rect;
-      if (GetClientRect(hwnd, &rect) == FALSE) {
+      if (GetWindowRect(hwnd, &rect) == FALSE) {
         return false;
       }
       out_width = rect.right - rect.left;

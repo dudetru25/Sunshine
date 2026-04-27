@@ -1016,14 +1016,14 @@ namespace platf::dxgi {
     env_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     env_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-    RECT client_rect;
-    if (!GetClientRect(hwnd, &client_rect)) {
-      BOOST_LOG(error) << "Failed to get window client rect"sv;
+    RECT window_rect;
+    if (!GetWindowRect(hwnd, &window_rect)) {
+      BOOST_LOG(error) << "Failed to get window rect"sv;
       return -1;
     }
 
-    width = client_rect.right - client_rect.left;
-    height = client_rect.bottom - client_rect.top;
+    width = window_rect.right - window_rect.left;
+    height = window_rect.bottom - window_rect.top;
 
     if (width <= 0 || height <= 0) {
       BOOST_LOG(error) << "Window has invalid dimensions: "sv << width << 'x' << height;

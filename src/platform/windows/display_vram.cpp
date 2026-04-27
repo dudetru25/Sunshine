@@ -1713,24 +1713,20 @@ namespace platf::dxgi {
 
     target_hwnd = hwnd;
 
-    // Resize the window's client area to match the stream resolution.
-    // This ensures PrintWindow fills the entire capture texture with no padding.
+    // Strip minimize/maximize/close buttons so only the Mac-side window chrome shows controls.
+    // Keep WS_CAPTION for the title bar (app name, menus, tabs).
+    DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+    style &= ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+    SetWindowLong(hwnd, GWL_STYLE, style);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    // Resize the full window (including title bar) to match the stream resolution.
+    // We capture the entire window, not just the client area, so outer size = stream size.
     if (config.width > 0 && config.height > 0) {
-      RECT desired_client = {0, 0, config.width, config.height};
-      DWORD style = GetWindowLong(hwnd, GWL_STYLE);
-      DWORD ex_style = GetWindowLong(hwnd, GWL_EXSTYLE);
-      BOOL has_menu = (GetMenu(hwnd) != nullptr) ? TRUE : FALSE;
+      BOOST_LOG(info) << "[WinCap] Resizing window to "sv << config.width << 'x' << config.height;
 
-      AdjustWindowRectEx(&desired_client, style, has_menu, ex_style);
-
-      int outer_w = desired_client.right - desired_client.left;
-      int outer_h = desired_client.bottom - desired_client.top;
-
-      BOOST_LOG(info) << "[WinCap] Resizing window to client area "sv
-                      << config.width << 'x' << config.height
-                      << " (outer "sv << outer_w << 'x' << outer_h << ')';
-
-      SetWindowPos(hwnd, nullptr, 0, 0, outer_w, outer_h,
+      SetWindowPos(hwnd, nullptr, 0, 0, config.width, config.height,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
       SetForegroundWindow(hwnd);
@@ -1790,12 +1786,12 @@ namespace platf::dxgi {
     last_frame_time = std::chrono::steady_clock::now();
 
     // Check if window is still valid and visible
-    RECT clientRect;
-    if (GetClientRect(target_hwnd, &clientRect) == false) {
+    RECT windowRect;
+    if (GetWindowRect(target_hwnd, &windowRect) == false) {
       return capture_e::timeout;
     }
-    int currentWidth = clientRect.right - clientRect.left;
-    int currentHeight = clientRect.bottom - clientRect.top;
+    int currentWidth = windowRect.right - windowRect.left;
+    int currentHeight = windowRect.bottom - windowRect.top;
 
     if (currentWidth <= 0 || currentHeight <= 0) {
       return capture_e::timeout;
@@ -1823,31 +1819,7 @@ namespace platf::dxgi {
       return capture_e::error;
     }
 
-    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_CLIENTONLY);
-
-    // Draw the system cursor if it's within the target window's client area
-    if (cursor_visible) {
-      CURSORINFO ci = {};
-      ci.cbSize = sizeof(ci);
-      if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
-        POINT cursor_pos = ci.ptScreenPos;
-        ScreenToClient(target_hwnd, &cursor_pos);
-
-        if (cursor_pos.x >= 0 && cursor_pos.x < width &&
-            cursor_pos.y >= 0 && cursor_pos.y < height) {
-          ICONINFO icon_info = {};
-          if (GetIconInfo(ci.hCursor, &icon_info)) {
-            DrawIconEx(hdc,
-                       cursor_pos.x - icon_info.xHotspot,
-                       cursor_pos.y - icon_info.yHotspot,
-                       ci.hCursor, 0, 0, 0, nullptr, DI_NORMAL);
-
-            if (icon_info.hbmMask) DeleteObject(icon_info.hbmMask);
-            if (icon_info.hbmColor) DeleteObject(icon_info.hbmColor);
-          }
-        }
-      }
-    }
+    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_RENDERFULLCONTENT);
 
     RECT empty = {0, 0, 0, 0};
     surface->ReleaseDC(&empty);
