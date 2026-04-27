@@ -5,6 +5,7 @@
 // platform includes
 #include <dxgi1_2.h>
 #include <roapi.h>
+#include <DispatcherQueue.h>
 
 // local includes
 #include "display.h"
@@ -238,6 +239,17 @@ namespace platf::dxgi {
     }
 
     target_hwnd = hwnd;
+
+    // WGC CreateForWindow requires a DispatcherQueue on the calling thread
+    // to communicate with DWM. Without it, E_OUTOFMEMORY is returned.
+    DispatcherQueueOptions dqOptions = {};
+    dqOptions.dwSize = sizeof(DispatcherQueueOptions);
+    dqOptions.threadType = DQTYPE_THREAD_CURRENT;
+    dqOptions.apartmentType = DQTAT_COM_NONE;
+
+    ABI::Windows::System::IDispatcherQueueController *dqController = nullptr;
+    HRESULT dq_hr = CreateDispatcherQueueController(dqOptions, &dqController);
+    BOOST_LOG(info) << "[WinCap] CreateDispatcherQueueController result: 0x"sv << util::hex(dq_hr).to_string_view();
 
     try {
       BOOST_LOG(info) << "[WinCap] Getting IGraphicsCaptureItemInterop factory...";
