@@ -251,27 +251,64 @@ namespace platf::dxgi {
     HRESULT dq_hr = CreateDispatcherQueueController(dqOptions, &dqController);
     BOOST_LOG(info) << "[WinCap] CreateDispatcherQueueController result: 0x"sv << util::hex(dq_hr).to_string_view();
 
+    // WGC CreateForWindow enforces user isolation -- a SYSTEM process cannot
+    // capture a window owned by a different user. Impersonate the window owner.
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    BOOST_LOG(info) << "[WinCap] Window owner PID: "sv << windowPid;
+
+    HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPid);
+    HANDLE userToken = nullptr;
+    bool impersonating = false;
+    if (processHandle) {
+      if (OpenProcessToken(processHandle, TOKEN_DUPLICATE | TOKEN_QUERY, &userToken)) {
+        HANDLE dupToken = nullptr;
+        if (DuplicateTokenEx(userToken, TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE, nullptr, SecurityImpersonation, TokenImpersonation, &dupToken)) {
+          if (SetThreadToken(nullptr, dupToken)) {
+            impersonating = true;
+            BOOST_LOG(info) << "[WinCap] Impersonating window owner (PID "sv << windowPid << ')';
+          } else {
+            BOOST_LOG(warning) << "[WinCap] SetThreadToken failed: "sv << GetLastError();
+          }
+          CloseHandle(dupToken);
+        } else {
+          BOOST_LOG(warning) << "[WinCap] DuplicateTokenEx failed: "sv << GetLastError();
+        }
+        CloseHandle(userToken);
+      } else {
+        BOOST_LOG(warning) << "[WinCap] OpenProcessToken failed: "sv << GetLastError();
+      }
+      CloseHandle(processHandle);
+    } else {
+      BOOST_LOG(warning) << "[WinCap] OpenProcess failed for PID "sv << windowPid << ": "sv << GetLastError();
+    }
+
     try {
       BOOST_LOG(info) << "[WinCap] Getting IGraphicsCaptureItemInterop factory...";
       auto interop_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
       if (interop_factory == nullptr) {
         BOOST_LOG(error) << "[WinCap] IGraphicsCaptureItemInterop factory is null";
+        if (impersonating) RevertToSelf();
         return -1;
       }
       BOOST_LOG(info) << "[WinCap] Calling CreateForWindow...";
       status = interop_factory->CreateForWindow(hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item));
+      if (impersonating) RevertToSelf();
       if (FAILED(status)) {
         BOOST_LOG(error) << "[WinCap] CreateForWindow failed: [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
       BOOST_LOG(info) << "[WinCap] CreateForWindow succeeded";
     } catch (winrt::hresult_error &e) {
+      if (impersonating) RevertToSelf();
       BOOST_LOG(error) << "[WinCap] WinRT exception in CreateForWindow: [0x"sv << util::hex(e.code()).to_string_view() << ']';
       return -1;
     } catch (std::exception &e) {
+      if (impersonating) RevertToSelf();
       BOOST_LOG(error) << "[WinCap] std::exception in CreateForWindow: "sv << e.what();
       return -1;
     } catch (...) {
+      if (impersonating) RevertToSelf();
       BOOST_LOG(error) << "[WinCap] Unknown exception in CreateForWindow";
       return -1;
     }
