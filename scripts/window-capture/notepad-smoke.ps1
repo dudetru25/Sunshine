@@ -36,63 +36,46 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Get-VisibleWindows {
-    Add-Type @"
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public class WinEnum {
-    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
-    [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr hWnd);
-    [DllImport("user32.dll")] static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    public static List<Dictionary<string, string>> GetWindows() {
-        var result = new List<Dictionary<string, string>>();
-        EnumWindows((hWnd, _) => {
-            if (!IsWindowVisible(hWnd)) return true;
-            int len = GetWindowTextLength(hWnd);
-            if (len == 0) return true;
-
-            var sb = new StringBuilder(len + 1);
-            GetWindowText(hWnd, sb, sb.Capacity);
-            string title = sb.ToString();
-
-            uint pid;
-            GetWindowThreadProcessId(hWnd, out pid);
-            string exeName = "";
-            try {
-                var proc = Process.GetProcessById((int)pid);
-                exeName = proc.ProcessName + ".exe";
-            } catch { }
-
-            var dict = new Dictionary<string, string>();
-            dict["hwnd"] = "0x" + hWnd.ToString("X");
-            dict["title"] = title;
-            dict["exe"] = exeName;
-            dict["pid"] = pid.ToString();
-            result.Add(dict);
-            return true;
-        }, IntPtr.Zero);
-        return result;
+    $results = @()
+    $procs = Get-Process | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -ne "" }
+    foreach ($p in $procs) {
+        $results += @{
+            hwnd  = "0x" + $p.MainWindowHandle.ToString("X")
+            title = $p.MainWindowTitle
+            exe   = $p.ProcessName + ".exe"
+            pid   = $p.Id.ToString()
+        }
     }
-}
-"@
-    return [WinEnum]::GetWindows()
+    return $results
 }
 
 function Find-NotepadWindow {
-    $windows = Get-VisibleWindows
-    foreach ($win in $windows) {
-        if ($win["exe"] -eq "notepad.exe" -or $win["title"] -like "*Notepad*") {
-            return $win
+    $procs = Get-Process -Name "notepad" -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }
+
+    if ($procs) {
+        $p = @($procs)[0]
+        return @{
+            hwnd  = "0x" + $p.MainWindowHandle.ToString("X")
+            title = $p.MainWindowTitle
+            exe   = $p.ProcessName + ".exe"
+            pid   = $p.Id.ToString()
         }
     }
+
+    $procs = Get-Process | Where-Object {
+        $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -like "*Notepad*"
+    }
+    if ($procs) {
+        $p = @($procs)[0]
+        return @{
+            hwnd  = "0x" + $p.MainWindowHandle.ToString("X")
+            title = $p.MainWindowTitle
+            exe   = $p.ProcessName + ".exe"
+            pid   = $p.Id.ToString()
+        }
+    }
+
     return $null
 }
 
@@ -131,21 +114,32 @@ switch ($Action) {
 
         $proc = Start-Process notepad.exe -PassThru
         $retries = 0
-        $maxRetries = 20
+        $maxRetries = 30
         $win = $null
 
         while ($retries -lt $maxRetries) {
-            Start-Sleep -Milliseconds 300
+            Start-Sleep -Milliseconds 500
             $win = Find-NotepadWindow
             if ($win) { break }
             $retries++
+            if ($retries % 5 -eq 0) {
+                $allNotepad = Get-Process -Name "notepad" -ErrorAction SilentlyContinue
+                $handleInfo = if ($allNotepad) {
+                    ($allNotepad | ForEach-Object { "pid=$($_.Id) hwnd=$($_.MainWindowHandle) title='$($_.MainWindowTitle)'" }) -join "; "
+                } else { "no notepad processes" }
+                Write-Host "[debug] retry $retries/$maxRetries - $handleInfo" -ForegroundColor Yellow
+            }
         }
 
         if ($win -eq $null) {
+            $allNotepad = Get-Process -Name "notepad" -ErrorAction SilentlyContinue
+            $debugInfo = if ($allNotepad) {
+                ($allNotepad | ForEach-Object { "pid=$($_.Id) hwnd=$($_.MainWindowHandle)" }) -join "; "
+            } else { "no notepad processes found" }
             Write-JsonResult @{
-                status = "error"
-                message = "Notepad launched but window not found after $maxRetries retries"
-                pid = $proc.Id.ToString()
+                status  = "error"
+                message = "Notepad launched but window not found after $maxRetries retries. Debug: $debugInfo"
+                pid     = $proc.Id.ToString()
             }
             exit 1
         }
