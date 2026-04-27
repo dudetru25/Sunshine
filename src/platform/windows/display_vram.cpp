@@ -1733,6 +1733,8 @@ namespace platf::dxgi {
       SetWindowPos(hwnd, nullptr, 0, 0, outer_w, outer_h,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
+      SetForegroundWindow(hwnd);
+
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -1821,9 +1823,7 @@ namespace platf::dxgi {
       return capture_e::error;
     }
 
-    // PW_RENDERFULLCONTENT (0x02) captures even occluded content
-    // PW_CLIENTONLY (0x01) skips the title bar and borders
-    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_RENDERFULLCONTENT | PW_CLIENTONLY);
+    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_CLIENTONLY);
 
     RECT empty = {0, 0, 0, 0};
     surface->ReleaseDC(&empty);

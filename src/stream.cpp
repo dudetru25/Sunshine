@@ -1131,6 +1131,15 @@ namespace stream {
         })
       }
 
+      // For window-capture apps, terminate when all sessions disconnect
+      if (proc::proc.running() > 0 && server->_sessions->empty() && !has_session_awaiting_peer) {
+        auto &app = proc::proc.get_running_app();
+        if (app.capture_mode == "window") {
+          BOOST_LOG(info) << "Window capture app: terminating on disconnect"sv;
+          proc::proc.terminate();
+        }
+      }
+
       // Don't break until any pending sessions either expire or connect
       if (proc::proc.running() == 0 && !has_session_awaiting_peer) {
         BOOST_LOG(info) << "Process terminated"sv;
