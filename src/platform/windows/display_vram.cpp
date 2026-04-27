@@ -1708,157 +1708,139 @@ namespace platf::dxgi {
     return 0;
   }
 
-  int display_ddup_window_vram_t::init(const ::video::config_t &config, const std::string &display_name, HWND hwnd) {
-    BOOST_LOG(info) << "[WinCap-DDUP] Initializing DDUP window capture for HWND "sv << (void *) hwnd;
+  int display_window_vram_t::init(const ::video::config_t &config, HWND hwnd) {
+    BOOST_LOG(info) << "[WinCap] Initializing PrintWindow capture for HWND "sv << (void *) hwnd;
 
-    if (display_base_t::init(config, display_name)) {
-      BOOST_LOG(error) << "[WinCap-DDUP] display_base_t::init failed"sv;
+    if (display_base_t::init_for_window(config, hwnd)) {
+      BOOST_LOG(error) << "[WinCap] display_base_t::init_for_window failed"sv;
       return -1;
     }
 
-    if (dup.init(this, config)) {
-      BOOST_LOG(error) << "[WinCap-DDUP] DDUP init failed"sv;
-      return -1;
-    }
-
-    desktop_width = width;
-    desktop_height = height;
     target_hwnd = hwnd;
+    capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    RECT clientRect;
-    if (GetClientRect(hwnd, &clientRect) == false) {
-      BOOST_LOG(error) << "[WinCap-DDUP] GetClientRect failed"sv;
+    // Create GDI-compatible texture for PrintWindow rendering
+    D3D11_TEXTURE2D_DESC gdi_desc = {};
+    gdi_desc.Width = width;
+    gdi_desc.Height = height;
+    gdi_desc.MipLevels = 1;
+    gdi_desc.ArraySize = 1;
+    gdi_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    gdi_desc.SampleDesc.Count = 1;
+    gdi_desc.Usage = D3D11_USAGE_DEFAULT;
+    gdi_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    gdi_desc.MiscFlags = D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+
+    auto status = device->CreateTexture2D(&gdi_desc, nullptr, &gdi_texture);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "[WinCap] Failed to create GDI texture [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
     }
 
-    int windowWidth = clientRect.right - clientRect.left;
-    int windowHeight = clientRect.bottom - clientRect.top;
+    frame_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / config.framerate;
+    last_frame_time = std::chrono::steady_clock::now();
 
-    if (windowWidth <= 0 || windowHeight <= 0) {
-      BOOST_LOG(error) << "[WinCap-DDUP] Window has invalid dimensions: "sv << windowWidth << 'x' << windowHeight;
-      return -1;
-    }
-
-    width = windowWidth;
-    height = windowHeight;
-    width_before_rotation = windowWidth;
-    height_before_rotation = windowHeight;
-
-    BOOST_LOG(info) << "[WinCap-DDUP] Desktop: "sv << desktop_width << 'x' << desktop_height
-                    << ", Window crop: "sv << windowWidth << 'x' << windowHeight;
+    BOOST_LOG(info) << "[WinCap] PrintWindow capture initialized: "sv << width << 'x' << height
+                    << " @ "sv << config.framerate << "fps"sv;
     return 0;
   }
 
-  capture_e display_ddup_window_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
-    DXGI_OUTDUPL_FRAME_INFO frame_info;
-    resource_t::pointer res_p {};
-    auto capture_status = dup.next_frame(frame_info, timeout, &res_p);
-    resource_t res {res_p};
-
-    if (capture_status != capture_e::ok) {
-      return capture_status;
+  capture_e display_window_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
+    if (IsWindow(target_hwnd) == false) {
+      BOOST_LOG(error) << "[WinCap] Target window closed"sv;
+      return capture_e::error;
     }
 
-    const bool frame_update_flag = frame_info.LastPresentTime.QuadPart != 0;
-    const bool mouse_update_flag = frame_info.LastMouseUpdateTime.QuadPart != 0 || frame_info.PointerShapeBufferSize > 0;
-
-    if (frame_update_flag == false && mouse_update_flag == false) {
-      return capture_e::timeout;
-    }
-
-    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
-    if (auto qpc_displayed = std::max(frame_info.LastPresentTime.QuadPart, frame_info.LastMouseUpdateTime.QuadPart)) {
-      frame_timestamp = std::chrono::steady_clock::now() - qpc_time_difference(qpc_counter(), qpc_displayed);
-    }
-
-    texture2d_t src {};
-    if (frame_update_flag) {
-      auto status = res->QueryInterface(IID_ID3D11Texture2D, (void **) &src);
-      if (FAILED(status)) {
-        BOOST_LOG(error) << "[WinCap-DDUP] QueryInterface for texture failed [0x"sv << util::hex(status).to_string_view() << ']';
-        return capture_e::error;
-      }
-
-      if (capture_format == DXGI_FORMAT_UNKNOWN) {
-        D3D11_TEXTURE2D_DESC desc;
-        src->GetDesc(&desc);
-        capture_format = desc.Format;
-        BOOST_LOG(info) << "[WinCap-DDUP] Capture format ["sv << dxgi_format_to_string(capture_format) << ']';
-      }
-    }
-
-    if (src) {
-      POINT clientOrigin = {0, 0};
-      ClientToScreen(target_hwnd, &clientOrigin);
-
-      RECT clientRect;
-      GetClientRect(target_hwnd, &clientRect);
-      int cropW = clientRect.right - clientRect.left;
-      int cropH = clientRect.bottom - clientRect.top;
-
-      int cropX = clientOrigin.x - offset_x;
-      int cropY = clientOrigin.y - offset_y;
-
-      // Clamp crop region to desktop bounds
-      if (cropX < 0) cropX = 0;
-      if (cropY < 0) cropY = 0;
-      if (cropX + cropW > desktop_width) cropW = desktop_width - cropX;
-      if (cropY + cropH > desktop_height) cropH = desktop_height - cropY;
-
-      if (cropW != width || cropH != height) {
-        width = cropW;
-        height = cropH;
-        width_before_rotation = cropW;
-        height_before_rotation = cropH;
-      }
-
-      if (cropW <= 0 || cropH <= 0) {
+    // Frame pacing: wait until next frame interval
+    auto now = std::chrono::steady_clock::now();
+    auto next_frame = last_frame_time + frame_interval;
+    if (now < next_frame) {
+      auto wait_time = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
+      if (wait_time > timeout) {
+        std::this_thread::sleep_for(timeout);
         return capture_e::timeout;
       }
+      std::this_thread::sleep_for(wait_time);
+    }
+    last_frame_time = std::chrono::steady_clock::now();
 
-      if (!pull_free_image_cb(img_out)) {
-        return capture_e::interrupted;
-      }
+    // Check if window dimensions changed
+    RECT clientRect;
+    if (GetClientRect(target_hwnd, &clientRect) == false) {
+      return capture_e::timeout;
+    }
+    int currentWidth = clientRect.right - clientRect.left;
+    int currentHeight = clientRect.bottom - clientRect.top;
 
-      auto d3d_img = std::static_pointer_cast<img_d3d_t>(img_out);
-      if (complete_img(d3d_img.get(), false)) {
-        return capture_e::error;
-      }
-
-      texture_lock_helper lock(d3d_img->capture_mutex.get());
-      if (lock.lock() == false) {
-        BOOST_LOG(error) << "[WinCap-DDUP] Failed to lock capture texture"sv;
-        return capture_e::error;
-      }
-
-      d3d_img->blank = false;
-
-      D3D11_BOX box;
-      box.left = cropX;
-      box.top = cropY;
-      box.right = cropX + cropW;
-      box.bottom = cropY + cropH;
-      box.front = 0;
-      box.back = 1;
-
-      device_ctx->CopySubresourceRegion(d3d_img->capture_texture.get(), 0, 0, 0, 0, src.get(), 0, &box);
-
-      if (frame_timestamp) {
-        d3d_img->frame_timestamp = *frame_timestamp;
-      }
-
-      last_captured_img = img_out;
-    } else if (last_captured_img) {
-      img_out = last_captured_img;
-    } else {
+    if (currentWidth <= 0 || currentHeight <= 0) {
       return capture_e::timeout;
     }
 
+    if (currentWidth != width || currentHeight != height) {
+      BOOST_LOG(info) << "[WinCap] Window resized: "sv << width << 'x' << height
+                      << " -> "sv << currentWidth << 'x' << currentHeight;
+      return capture_e::reinit;
+    }
+
+    // Use PrintWindow to capture the window content into the GDI texture
+    IDXGISurface1 *surface = nullptr;
+    auto status = gdi_texture->QueryInterface(__uuidof(IDXGISurface1), (void **) &surface);
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "[WinCap] QueryInterface IDXGISurface1 failed [0x"sv << util::hex(status).to_string_view() << ']';
+      return capture_e::error;
+    }
+
+    HDC hdc = nullptr;
+    status = surface->GetDC(FALSE, &hdc);
+    if (FAILED(status)) {
+      surface->Release();
+      BOOST_LOG(error) << "[WinCap] GetDC failed [0x"sv << util::hex(status).to_string_view() << ']';
+      return capture_e::error;
+    }
+
+    // PW_RENDERFULLCONTENT (0x02) captures even occluded content
+    // PW_CLIENTONLY (0x01) skips the title bar and borders
+    BOOL printResult = PrintWindow(target_hwnd, hdc, PW_RENDERFULLCONTENT | PW_CLIENTONLY);
+
+    RECT empty = {0, 0, 0, 0};
+    surface->ReleaseDC(&empty);
+    surface->Release();
+
+    if (printResult == false) {
+      BOOST_LOG(warning) << "[WinCap] PrintWindow failed"sv;
+      if (last_captured_img) {
+        img_out = last_captured_img;
+        return capture_e::ok;
+      }
+      return capture_e::timeout;
+    }
+
+    // Copy GDI texture to output image
+    if (!pull_free_image_cb(img_out)) {
+      return capture_e::interrupted;
+    }
+
+    auto d3d_img = std::static_pointer_cast<img_d3d_t>(img_out);
+    if (complete_img(d3d_img.get(), false)) {
+      return capture_e::error;
+    }
+
+    texture_lock_helper lock(d3d_img->capture_mutex.get());
+    if (lock.lock() == false) {
+      BOOST_LOG(error) << "[WinCap] Failed to lock capture texture"sv;
+      return capture_e::error;
+    }
+
+    d3d_img->blank = false;
+    d3d_img->frame_timestamp = last_frame_time;
+    device_ctx->CopyResource(d3d_img->capture_texture.get(), gdi_texture.get());
+
+    last_captured_img = img_out;
     return capture_e::ok;
   }
 
-  capture_e display_ddup_window_vram_t::release_snapshot() {
-    return dup.release_frame();
+  capture_e display_window_vram_t::release_snapshot() {
+    return capture_e::ok;
   }
 
   int display_wgc_vram_t::init(const ::video::config_t &config, HWND hwnd) {

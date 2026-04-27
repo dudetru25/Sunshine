@@ -1132,13 +1132,13 @@ namespace platf {
           return nullptr;
         }
 
-        BOOST_LOG(info) << "[WinCap] Creating display_ddup_window_vram_t (DDUP + crop)...";
-        auto disp = std::make_shared<dxgi::display_ddup_window_vram_t>();
-        if (!disp->init(config, display_name, hwnd)) {
-          BOOST_LOG(info) << "[WinCap] Window capture (DDUP + crop) initialized successfully";
+        BOOST_LOG(info) << "[WinCap] Creating display_window_vram_t (PrintWindow + GDI interop)...";
+        auto disp = std::make_shared<dxgi::display_window_vram_t>();
+        if (!disp->init(config, hwnd)) {
+          BOOST_LOG(info) << "[WinCap] Window capture (PrintWindow) initialized successfully";
           return disp;
         }
-        BOOST_LOG(error) << "[WinCap] display_ddup_window_vram_t::init() failed";
+        BOOST_LOG(error) << "[WinCap] display_window_vram_t::init() failed";
         return nullptr;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "[WinCap] Exception in window capture setup: "sv << e.what();

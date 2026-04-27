@@ -341,20 +341,21 @@ namespace platf::dxgi {
   };
 
   /**
-   * DDUP-based window capture that crops desktop frames to a target window's client rect.
+   * Per-window capture using PrintWindow + D3D11 GDI interop.
+   * Captures the target window's content in isolation (no desktop compositing).
    * Used because WGC CreateForWindow is blocked for SYSTEM service processes.
    */
-  class display_ddup_window_vram_t: public display_vram_t {
+  class display_window_vram_t: public display_vram_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name, HWND hwnd);
+    int init(const ::video::config_t &config, HWND hwnd);
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
 
-    duplication_t dup;
     HWND target_hwnd = nullptr;
-    int desktop_width = 0;
-    int desktop_height = 0;
+    texture2d_t gdi_texture;
     std::shared_ptr<platf::img_t> last_captured_img;
+    std::chrono::steady_clock::time_point last_frame_time;
+    std::chrono::nanoseconds frame_interval;
   };
 
   /**
