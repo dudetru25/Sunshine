@@ -25,6 +25,7 @@
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
+#include "globals.h"
 #include "logging.h"
 #include "platform/common.h"
 #include "process.h"
@@ -264,6 +265,12 @@ namespace proc {
 
     _app_launch_time = std::chrono::steady_clock::now();
 
+    _previous_display_cursor = display_cursor;
+    if (display_cursor != _app.show_cursor) {
+      display_cursor = _app.show_cursor;
+      BOOST_LOG(info) << "App override: display_cursor = "sv << (display_cursor ? "true"sv : "false"sv);
+    }
+
     fg.disable();
 
     return 0;
@@ -338,6 +345,11 @@ namespace proc {
     }
 
     _pipe.reset();
+
+    if (display_cursor != _previous_display_cursor) {
+      display_cursor = _previous_display_cursor;
+      BOOST_LOG(info) << "Restored display_cursor = "sv << (display_cursor ? "true"sv : "false"sv);
+    }
 
     bool has_run = _app_id > 0;
 
@@ -657,6 +669,7 @@ namespace proc {
         auto capture_mode = app_node.get_optional<std::string>("capture-mode"s);
         auto window_match = app_node.get_optional<std::string>("window-match"s);
         auto window_resolution = app_node.get_optional<std::string>("window-resolution"s);
+        auto show_cursor = app_node.get_optional<bool>("show-cursor"s);
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -729,6 +742,7 @@ namespace proc {
         ctx.capture_mode = capture_mode.value_or("");
         ctx.window_match = window_match.value_or("");
         ctx.window_resolution = window_resolution.value_or("");
+        ctx.show_cursor = show_cursor.value_or(config::video.show_cursor);
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {

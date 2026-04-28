@@ -23,6 +23,7 @@
 #include "config.h"
 #include "entry_handler.h"
 #include "file_handler.h"
+#include "globals.h"
 #include "logging.h"
 #include "nvhttp.h"
 #include "platform/common.h"
@@ -505,6 +506,8 @@ namespace config {
       2,  // vk.tune (default: ll - low latency)
       2,  // vk.rc_mode (default: cbr)
     },
+
+    true,  // show_cursor
 
     {},  // capture
     {},  // encoder
@@ -1170,6 +1173,8 @@ namespace config {
     int_f(vars, "vk_tune", video.vk.tune);
     int_f(vars, "vk_rc_mode", video.vk.rc_mode);
 
+    bool_f(vars, "show_cursor", video.show_cursor);
+
     string_f(vars, "capture", video.capture);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
@@ -1483,6 +1488,7 @@ namespace config {
       // referenced in the config, so we may receive exceptions if
       // the path is incorrect or inaccessible.
       apply_config(std::move(vars));
+      display_cursor = video.show_cursor;
       config_loaded = true;
     } catch (const std::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();

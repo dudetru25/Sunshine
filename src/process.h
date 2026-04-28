@@ -69,6 +69,7 @@ namespace proc {
     bool elevated;
     bool auto_detach;
     bool wait_all;
+    bool show_cursor;
     std::chrono::seconds exit_timeout;
   };
 
@@ -111,6 +112,7 @@ namespace proc {
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
+    bool _previous_display_cursor {true};
 
     boost::process::v1::child _process;
     boost::process::v1::group _process_group;

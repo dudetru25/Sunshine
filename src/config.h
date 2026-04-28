@@ -92,6 +92,8 @@ namespace config {
       int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
     } vk;
 
+    bool show_cursor;
+
     std::string capture;
     std::string encoder;
     std::string adapter_name;
