@@ -315,6 +315,7 @@ namespace nvhttp {
     launch_session->continuous_audio = util::from_view(get_arg(args, "continuousAudio", "0"));
     launch_session->gcmap = (int) util::from_view(get_arg(args, "gcmap", "0"));
     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+    launch_session->show_cursor = config::video.show_cursor;
 
     // Encrypted RTSP is enabled with client reported corever >= 1
     auto corever = util::from_view(get_arg(args, "corever", "0"));
@@ -814,6 +815,22 @@ namespace nvhttp {
       app.put("IsHdrSupported"s, video::active_hevc_mode == 3 ? 1 : 0);
       app.put("AppTitle"s, proc.name);
       app.put("ID", proc.id);
+      if (!proc.stream_resolution.empty()) {
+        app.put("AppStreamResolution"s, proc.stream_resolution);
+      }
+      if (!proc.client_display_mode.empty()) {
+        app.put("AppClientDisplayMode"s, proc.client_display_mode);
+      }
+      if (!proc.auto_spawn_from.empty()) {
+        app.put("AppAutoSpawnFrom"s, proc.auto_spawn_from);
+        app.put("AppWindowReady"s, proc::proc.app_window_ready(util::from_view(proc.id)) ? 1 : 0);
+      }
+      if (proc.client_app_window_set) {
+        app.put("AppClientAppWindow"s, proc.client_app_window ? 1 : 0);
+      }
+      if (proc.client_absolute_mouse_set) {
+        app.put("AppClientAbsoluteMouse"s, proc.client_absolute_mouse ? 1 : 0);
+      }
 
       apps.push_back(std::make_pair("App", std::move(app)));
     }
@@ -857,7 +874,7 @@ namespace nvhttp {
     auto appid = util::from_view(get_arg(args, "appid"));
 
     auto current_appid = proc::proc.running();
-    if (current_appid > 0) {
+    if (current_appid > 0 && !proc::proc.app_allows_parallel_launch((int) appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
@@ -975,6 +992,12 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    auto &running_app = proc::proc.get_running_app();
+    launch_session->output_name = running_app.stream_output_name;
+    launch_session->show_cursor = running_app.show_cursor;
+    if (!launch_session->output_name.empty()) {
+      BOOST_LOG(info) << "Resuming app with capture output override: ["sv << launch_session->output_name << ']';
+    }
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at

@@ -137,9 +137,6 @@ namespace proc {
   }
 
   int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
-    // Ensure starting from a clean slate
-    terminate();
-
     auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
       return app.id == std::to_string(app_id);
     });
@@ -149,8 +146,16 @@ namespace proc {
       return 404;
     }
 
+    if (iter->capture_mode == "vdd") {
+      return execute_vdd(app_id, *iter, launch_session);
+    }
+
+    // Non-VDD streams keep Sunshine's normal single-app/desktop behavior.
+    terminate();
+
     _app_id = app_id;
     _app = *iter;
+    launch_session->show_cursor = _app.show_cursor;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -261,19 +266,140 @@ namespace proc {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
         return -1;
       }
-    }
 
-    _app_launch_time = std::chrono::steady_clock::now();
-
-    _previous_display_cursor = display_cursor;
-    if (display_cursor != _app.show_cursor) {
-      display_cursor = _app.show_cursor;
-      BOOST_LOG(info) << "App override: display_cursor = "sv << (display_cursor ? "true"sv : "false"sv);
+      _app_launch_time = std::chrono::steady_clock::now();
     }
 
     fg.disable();
 
     return 0;
+  }
+
+  int proc_t::execute_vdd(int app_id, const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+#ifndef _WIN32
+    BOOST_LOG(error) << "VDD app streaming is only supported on Windows"sv;
+    return -1;
+#else
+    launch_session->show_cursor = app.show_cursor;
+
+    if (app.cmd.empty() && !app.attach_existing) {
+      BOOST_LOG(error) << "VDD app streaming requires a launch command unless attach-existing is enabled"sv;
+      return -1;
+    }
+
+    std::error_code ec;
+    auto env = _env;
+    env["SUNSHINE_APP_ID"] = std::to_string(app_id);
+    env["SUNSHINE_APP_NAME"] = app.name;
+    env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session->width);
+    env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
+    env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session->fps);
+    env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
+    env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
+    env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
+    env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
+
+    file_t pipe;
+    if (!app.output.empty() && app.output != "null"sv) {
+      auto woutput = utf_utils::from_utf8(app.output);
+      pipe.reset(_wfsopen(woutput.c_str(), L"a", _SH_DENYNO));
+    }
+
+    for (auto &cmd : app.prep_cmds) {
+      if (cmd.do_cmd.empty()) {
+        continue;
+      }
+
+      boost::filesystem::path working_dir = app.working_dir.empty() ?
+                                              find_working_directory(cmd.do_cmd, env) :
+                                              boost::filesystem::path(app.working_dir);
+      BOOST_LOG(info) << "Executing VDD Do Cmd: ["sv << cmd.do_cmd << ']';
+      auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, env, pipe.get(), ec, nullptr);
+      if (ec) {
+        BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
+        return -1;
+      }
+
+      child.wait(ec);
+      if (ec || child.exit_code() != 0) {
+        BOOST_LOG(error) << '[' << cmd.do_cmd << "] failed for VDD app launch"sv;
+        return -1;
+      }
+    }
+
+    for (auto &cmd : app.detached) {
+      boost::filesystem::path working_dir = app.working_dir.empty() ?
+                                              find_working_directory(cmd, env) :
+                                              boost::filesystem::path(app.working_dir);
+      BOOST_LOG(info) << "Spawning VDD detached command ["sv << cmd << "] in ["sv << working_dir << ']';
+      auto child = platf::run_command(app.elevated, true, cmd, working_dir, env, pipe.get(), ec, nullptr);
+      if (ec) {
+        BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd << "]: System: "sv << ec.message();
+      } else {
+        child.detach();
+      }
+    }
+
+    boost::process::v1::child process;
+    boost::process::v1::group process_group;
+    std::chrono::steady_clock::time_point launch_time {};
+    bool placebo = app.attach_existing || app.auto_detach;
+
+    if (!app.cmd.empty() && !app.attach_existing) {
+      boost::filesystem::path working_dir = app.working_dir.empty() ?
+                                              find_working_directory(app.cmd, env) :
+                                              boost::filesystem::path(app.working_dir);
+      BOOST_LOG(info) << "Executing VDD app: ["sv << app.cmd << "] in ["sv << working_dir << ']';
+      process = platf::run_command(app.elevated, true, app.cmd, working_dir, env, pipe.get(), ec, &process_group);
+      if (ec) {
+        BOOST_LOG(warning) << "Couldn't run ["sv << app.cmd << "]: System: "sv << ec.message();
+        return -1;
+      }
+
+      launch_time = std::chrono::steady_clock::now();
+    }
+
+    std::string output_name;
+    auto match_hint = app.window_match.empty() ? app.name : app.window_match;
+    auto root_process_id = process ? (std::uint32_t) process.id() : 0;
+    BOOST_LOG(info) << "Preparing VDD app session ["sv << app.name
+                    << "] match=["sv << match_hint
+                    << "] client="sv << launch_session->width << 'x' << launch_session->height
+                    << " attach_existing="sv << (app.attach_existing ? "true"sv : "false"sv);
+
+    auto cleanup = util::fail_guard([&]() {
+      if (!output_name.empty()) {
+        platf::release_vdd_app(output_name);
+      }
+      terminate_process_group(process, process_group, app.exit_timeout);
+    });
+
+    if (!platf::prepare_vdd_app(root_process_id, match_hint, launch_session->width, launch_session->height, app.window_borderless, app.window_follow, 60s, output_name)) {
+      BOOST_LOG(error) << "Failed to prepare VDD app stream for ["sv << app.name << ']';
+      return -1;
+    }
+
+    launch_session->output_name = output_name;
+    BOOST_LOG(info) << "App session capture output = ["sv << launch_session->output_name << ']';
+
+    auto session_app = std::make_unique<session_app_t>(session_app_t {
+      app_id,
+      app,
+      launch_time,
+      placebo,
+      output_name,
+      std::move(process),
+      std::move(process_group),
+    });
+
+    {
+      std::lock_guard lock {_session_apps->mutex};
+      _session_apps->apps[launch_session->id] = std::move(session_app);
+    }
+
+    cleanup.disable();
+    return 0;
+#endif
   }
 
   int proc_t::running() {
@@ -309,10 +435,83 @@ namespace proc {
       terminate();
     }
 
+    std::vector<std::uint32_t> ended_session_apps;
+    int active_session_app_id = 0;
+    {
+      std::lock_guard lock {_session_apps->mutex};
+      for (auto &[launch_session_id, session_app] : _session_apps->apps) {
+        bool is_running = session_app->placebo;
+        if (!is_running && session_app->app.wait_all && session_app->process_group && platf::process_group_running((std::uintptr_t) session_app->process_group.native_handle())) {
+          is_running = true;
+        } else if (!is_running && session_app->process.running()) {
+          is_running = true;
+        } else if (!is_running && session_app->app.auto_detach && session_app->process.native_exit_code() == 0 &&
+                   std::chrono::steady_clock::now() - session_app->launch_time < 5s) {
+          BOOST_LOG(info) << "VDD app exited gracefully within 5 seconds of launch. Treating it as detached."sv;
+          session_app->placebo = true;
+          is_running = true;
+        }
+
+        if (is_running) {
+          if (active_session_app_id == 0) {
+            active_session_app_id = session_app->app_id;
+          }
+        } else {
+          ended_session_apps.push_back(launch_session_id);
+        }
+      }
+    }
+
+    for (auto launch_session_id : ended_session_apps) {
+      terminate_session(launch_session_id);
+    }
+
+    if (active_session_app_id > 0) {
+      return active_session_app_id;
+    }
+
     return 0;
   }
 
+  void proc_t::terminate_session(std::uint32_t launch_session_id) {
+    std::unique_ptr<session_app_t> session_app;
+    {
+      std::lock_guard lock {_session_apps->mutex};
+      auto it = _session_apps->apps.find(launch_session_id);
+      if (it == _session_apps->apps.end()) {
+        return;
+      }
+
+      session_app = std::move(it->second);
+      _session_apps->apps.erase(it);
+    }
+
+    BOOST_LOG(info) << "Cleaning up VDD app session ["sv << session_app->app.name
+                    << "] launch_session="sv << launch_session_id;
+
+    if (session_app->app.terminate_on_disconnect && !session_app->app.attach_existing) {
+      terminate_process_group(session_app->process, session_app->process_group, session_app->app.exit_timeout);
+    }
+
+    if (!session_app->output_name.empty()) {
+      platf::release_vdd_app(session_app->output_name);
+    }
+  }
+
   void proc_t::terminate() {
+    std::vector<std::uint32_t> session_ids;
+    {
+      std::lock_guard lock {_session_apps->mutex};
+      session_ids.reserve(_session_apps->apps.size());
+      for (auto &[launch_session_id, session_app] : _session_apps->apps) {
+        session_ids.push_back(launch_session_id);
+      }
+    }
+
+    for (auto launch_session_id : session_ids) {
+      terminate_session(launch_session_id);
+    }
+
     std::error_code ec;
     placebo = false;
     terminate_process_group(_process, _process_group, _app.exit_timeout);
@@ -346,11 +545,6 @@ namespace proc {
 
     _pipe.reset();
 
-    if (display_cursor != _previous_display_cursor) {
-      display_cursor = _previous_display_cursor;
-      BOOST_LOG(info) << "Restored display_cursor = "sv << (display_cursor ? "true"sv : "false"sv);
-    }
-
     bool has_run = _app_id > 0;
 
     // Only show the Stopped notification if we actually have an app to stop
@@ -372,6 +566,36 @@ namespace proc {
 
   std::vector<ctx_t> &proc_t::get_apps() {
     return _apps;
+  }
+
+  bool proc_t::app_allows_parallel_launch(int app_id) const {
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto &app) {
+      return app.id == std::to_string(app_id);
+    });
+
+    return iter != _apps.end() && iter->capture_mode == "vdd";
+  }
+
+  bool proc_t::app_window_ready(int app_id) const {
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto &app) {
+      return app.id == std::to_string(app_id);
+    });
+
+    if (iter == _apps.end() || iter->capture_mode != "vdd" || !iter->attach_existing) {
+      return false;
+    }
+
+    {
+      std::lock_guard lock {_session_apps->mutex};
+      for (const auto &[_, session_app] : _session_apps->apps) {
+        if (session_app->app_id == app_id) {
+          return false;
+        }
+      }
+    }
+
+    auto match_hint = iter->window_match.empty() ? iter->name : iter->window_match;
+    return platf::is_vdd_app_window_ready(match_hint);
   }
 
   // Gets application image from application list.
@@ -665,10 +889,19 @@ namespace proc {
         auto elevated = app_node.get_optional<bool>("elevated"s);
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
+        auto terminate_on_disconnect = app_node.get_optional<bool>("terminate-on-disconnect"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
         auto capture_mode = app_node.get_optional<std::string>("capture-mode"s);
         auto window_match = app_node.get_optional<std::string>("window-match"s);
         auto window_resolution = app_node.get_optional<std::string>("window-resolution"s);
+        auto stream_resolution = app_node.get_optional<std::string>("stream-resolution"s);
+        auto client_display_mode = app_node.get_optional<std::string>("client-display-mode"s);
+        auto auto_spawn_from = app_node.get_optional<std::string>("auto-spawn-from"s);
+        auto client_app_window = app_node.get_optional<bool>("client-app-window"s);
+        auto client_absolute_mouse = app_node.get_optional<bool>("client-absolute-mouse"s);
+        auto window_borderless = app_node.get_optional<bool>("window-borderless"s);
+        auto attach_existing = app_node.get_optional<bool>("attach-existing"s);
+        auto window_follow = app_node.get_optional<bool>("window-follow"s);
         auto show_cursor = app_node.get_optional<bool>("show-cursor"s);
 
         std::vector<proc::cmd_t> prep_cmds;
@@ -742,6 +975,17 @@ namespace proc {
         ctx.capture_mode = capture_mode.value_or("");
         ctx.window_match = window_match.value_or("");
         ctx.window_resolution = window_resolution.value_or("");
+        ctx.stream_resolution = stream_resolution.value_or("");
+        ctx.client_display_mode = client_display_mode.value_or("");
+        ctx.auto_spawn_from = auto_spawn_from.value_or("");
+        ctx.client_app_window_set = client_app_window.has_value();
+        ctx.client_app_window = client_app_window.value_or(false);
+        ctx.client_absolute_mouse_set = client_absolute_mouse.has_value();
+        ctx.client_absolute_mouse = client_absolute_mouse.value_or(false);
+        ctx.terminate_on_disconnect = terminate_on_disconnect.value_or(ctx.capture_mode == "window" || ctx.capture_mode == "vdd");
+        ctx.window_borderless = window_borderless.value_or(ctx.capture_mode == "vdd");
+        ctx.attach_existing = attach_existing.value_or(false);
+        ctx.window_follow = window_follow.value_or(ctx.capture_mode == "vdd");
         ctx.show_cursor = show_cursor.value_or(config::video.show_cursor);
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);

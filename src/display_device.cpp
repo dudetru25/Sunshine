@@ -747,14 +747,25 @@ namespace display_device {
 
   std::string map_output_name(const std::string &output_name) {
     std::lock_guard lock {DD_DATA.mutex};
+    if (boost::istarts_with(output_name, R"(\\.\DISPLAY)"sv)) {
+      return output_name;
+    }
+
     if (!DD_DATA.sm_instance) {
       // Fallback to giving back the output name if the platform is not supported.
       return output_name;
     }
 
-    return DD_DATA.sm_instance->execute([&output_name](auto &settings_iface) {
+    auto mapped = DD_DATA.sm_instance->execute([&output_name](auto &settings_iface) {
       return settings_iface.getDisplayName(output_name);
     });
+
+    if (mapped.empty() && !output_name.empty()) {
+      BOOST_LOG(warning) << "Display device mapping failed for ["sv << output_name << "], using raw output name for DXGI matching"sv;
+      return output_name;
+    }
+
+    return mapped;
   }
 
   void configure_display(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {

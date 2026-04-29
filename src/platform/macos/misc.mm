@@ -564,6 +564,18 @@ namespace platf {
   std::string resolve_render_device() {
     return {};
   }
+
+  bool prepare_vdd_app(std::uint32_t, const std::string &, int, int, bool, bool, std::chrono::seconds, std::string &) {
+    BOOST_LOG(error) << "VDD app streaming is only implemented on Windows"sv;
+    return false;
+  }
+
+  bool is_vdd_app_window_ready(const std::string &) {
+    return false;
+  }
+
+  void release_vdd_app(const std::string &) {
+  }
 }  // namespace platf
 
 namespace dyn {

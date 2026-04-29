@@ -45,6 +45,8 @@ namespace video {
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
 
     std::string window_id;  // HWND as hex string for window capture, empty = monitor capture
+    std::string output_name;  // Per-session monitor override, empty = global video output_name
+    bool cursor_visible {true};  // Per-session cursor compositing override
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

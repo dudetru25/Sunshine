@@ -4,11 +4,18 @@
  */
 // standard includes
 #include <csignal>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 // lib includes
@@ -37,6 +44,7 @@
 #undef NTDDI_VERSION
 #define NTDDI_VERSION NTDDI_WIN10
 #include <Shlwapi.h>
+#include <TlHelp32.h>
 
 // local includes
 #include "misc.h"
@@ -308,6 +316,28 @@ namespace platf {
     return userToken;
   }
 
+  HANDLE retrieve_linked_limited_token(HANDLE token) {
+    TOKEN_ELEVATION_TYPE elevation_type;
+    DWORD size;
+    if (!GetTokenInformation(token, TokenElevationType, &elevation_type, sizeof(elevation_type), &size)) {
+      BOOST_LOG(debug) << "Retrieving current token elevation information failed: "sv << GetLastError();
+      return nullptr;
+    }
+
+    if (elevation_type != TokenElevationTypeFull) {
+      return nullptr;
+    }
+
+    TOKEN_LINKED_TOKEN linked_token {};
+    if (!GetTokenInformation(token, TokenLinkedToken, reinterpret_cast<void *>(&linked_token), sizeof(linked_token), &size)) {
+      BOOST_LOG(warning) << "Unable to retrieve linked limited token for non-elevated app launch: "sv << GetLastError();
+      return nullptr;
+    }
+
+    BOOST_LOG(info) << "Launching non-elevated app with linked limited user token"sv;
+    return linked_token.LinkedToken;
+  }
+
   bool merge_user_environment_block(bp::environment &env, HANDLE shell_token) {
     // Get the target user's environment block
     PVOID env_block;
@@ -349,7 +379,7 @@ namespace platf {
    * @return `true` if the current process has system-level privileges, `false` otherwise.
    */
   bool is_running_as_system() {
-    BOOL ret;
+    BOOL ret = FALSE;
     PSID SystemSid;
     DWORD dwSize = SECURITY_MAX_SID_SIZE;
 
@@ -906,7 +936,7 @@ namespace platf {
     std::wstring start_dir = utf_utils::from_utf8(working_dir.string());
     HANDLE job = group ? group->native_handle() : nullptr;
     STARTUPINFOEXW startup_info = create_startup_info(file, job ? &job : nullptr, ec);
-    PROCESS_INFORMATION process_info;
+    PROCESS_INFORMATION process_info {};
 
     // Clone the environment to create a local copy. Boost.Process (bp) shares the environment with all spawned processes.
     // Since we're going to modify the 'env' variable by merging user-specific environment variables into it,
@@ -954,7 +984,7 @@ namespace platf {
       }
     });
 
-    BOOL ret;
+    BOOL ret = FALSE;
     if (is_running_as_system()) {
       // Duplicate the current user's token
       HANDLE user_token = retrieve_users_token(elevated);
@@ -978,8 +1008,16 @@ namespace platf {
       // Open the process as the current user account, elevation is handled in the token itself.
       ec = impersonate_current_user(user_token, [&]() {
         std::wstring env_block = create_environment_block(cloned_env);
-        std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, creation_flags);
-        ret = CreateProcessAsUserW(user_token, nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+        auto create_process = [&](DWORD flags) {
+          std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, flags);
+          ret = CreateProcessAsUserW(user_token, nullptr, wcmd.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+        };
+
+        create_process(creation_flags);
+        if (!ret && GetLastError() == ERROR_ACCESS_DENIED && (creation_flags & CREATE_BREAKAWAY_FROM_JOB)) {
+          BOOST_LOG(warning) << "CreateProcessAsUserW denied CREATE_BREAKAWAY_FROM_JOB; retrying without it"sv;
+          create_process(creation_flags & ~CREATE_BREAKAWAY_FROM_JOB);
+        }
       });
     }
     // Otherwise, launch the process using CreateProcessW()
@@ -995,15 +1033,46 @@ namespace platf {
         CloseHandle(process_token);
       });
 
+      HANDLE limited_token = elevated ? nullptr : retrieve_linked_limited_token(process_token);
+      auto limited_token_close = util::fail_guard([limited_token]() {
+        if (limited_token) {
+          CloseHandle(limited_token);
+        }
+      });
+      HANDLE environment_token = limited_token ? limited_token : process_token;
+
       // Populate env with user-specific environment variables
-      if (!merge_user_environment_block(cloned_env, process_token)) {
+      if (!merge_user_environment_block(cloned_env, environment_token)) {
         ec = std::make_error_code(std::errc::not_enough_memory);
         return bp::child();
       }
 
       std::wstring env_block = create_environment_block(cloned_env);
-      std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, creation_flags);
-      ret = CreateProcessW(nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+      if (limited_token) {
+        ec = impersonate_current_user(limited_token, [&]() {
+          auto create_process_as_limited_user = [&](DWORD flags) {
+            std::wstring wcmd = resolve_command_string(cmd, start_dir, limited_token, flags);
+            ret = CreateProcessAsUserW(limited_token, nullptr, wcmd.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+          };
+
+          create_process_as_limited_user(creation_flags);
+          if (!ret && GetLastError() == ERROR_ACCESS_DENIED && (creation_flags & CREATE_BREAKAWAY_FROM_JOB)) {
+            BOOST_LOG(warning) << "CreateProcessAsUserW denied CREATE_BREAKAWAY_FROM_JOB for non-elevated launch; retrying without it"sv;
+            create_process_as_limited_user(creation_flags & ~CREATE_BREAKAWAY_FROM_JOB);
+          }
+        });
+      } else {
+        auto create_process = [&](DWORD flags) {
+          std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, flags);
+          ret = CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+        };
+
+        create_process(creation_flags);
+        if (!ret && GetLastError() == ERROR_ACCESS_DENIED && (creation_flags & CREATE_BREAKAWAY_FROM_JOB)) {
+          BOOST_LOG(warning) << "CreateProcessW denied CREATE_BREAKAWAY_FROM_JOB; retrying without it"sv;
+          create_process(creation_flags & ~CREATE_BREAKAWAY_FROM_JOB);
+        }
+      }
     }
 
     // Use the results of the launch to create a bp::child object
@@ -1796,6 +1865,455 @@ namespace platf {
     return {};
   }
 
+  struct vdd_monitor_t {
+    std::wstring device_name;
+    RECT rect {};
+    bool primary {};
+  };
+
+  struct vdd_window_t {
+    HWND hwnd {};
+    DWORD pid {};
+    std::string title;
+    std::string process_name;
+    RECT rect {};
+    int score {};
+  };
+
+  std::string lower_copy(std::string value) {
+    boost::algorithm::to_lower(value);
+    return value;
+  }
+
+  std::string process_name_for_pid(DWORD pid) {
+    std::string exe_name;
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) {
+      return exe_name;
+    }
+
+    WCHAR path[MAX_PATH] = {};
+    DWORD path_size = MAX_PATH;
+    if (QueryFullProcessImageNameW(proc, 0, path, &path_size)) {
+      std::wstring wpath(path, path_size);
+      auto slash = wpath.find_last_of(L'\\');
+      auto wname = (slash != std::wstring::npos) ? wpath.substr(slash + 1) : wpath;
+      exe_name = utf_utils::to_utf8(wname);
+    }
+
+    CloseHandle(proc);
+    return exe_name;
+  }
+
+  std::set<DWORD> process_tree_pids(DWORD root_pid) {
+    std::set<DWORD> ids;
+    if (root_pid == 0) {
+      return ids;
+    }
+
+    ids.emplace(root_pid);
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+
+      HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if (snapshot == INVALID_HANDLE_VALUE) {
+        break;
+      }
+
+      PROCESSENTRY32W entry {};
+      entry.dwSize = sizeof(entry);
+      if (Process32FirstW(snapshot, &entry)) {
+        do {
+          if (ids.count(entry.th32ParentProcessID) && !ids.count(entry.th32ProcessID)) {
+            ids.emplace(entry.th32ProcessID);
+            changed = true;
+          }
+        } while (Process32NextW(snapshot, &entry));
+      }
+
+      CloseHandle(snapshot);
+    }
+
+    return ids;
+  }
+
+  std::vector<vdd_monitor_t> enumerate_monitors() {
+    std::vector<vdd_monitor_t> monitors;
+
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM lparam) -> BOOL {
+      MONITORINFOEXW info {};
+      info.cbSize = sizeof(info);
+      if (!GetMonitorInfoW(monitor, &info)) {
+        return TRUE;
+      }
+
+      auto *results = reinterpret_cast<std::vector<vdd_monitor_t> *>(lparam);
+      results->push_back(vdd_monitor_t {
+        info.szDevice,
+        info.rcMonitor,
+        (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+      });
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&monitors));
+
+    return monitors;
+  }
+
+  std::mutex vdd_reserved_monitors_mutex;
+  std::set<std::wstring> vdd_reserved_monitors;
+
+  std::optional<vdd_monitor_t> select_vdd_monitor(bool reserve) {
+    auto monitors = enumerate_monitors();
+    for (auto &monitor : monitors) {
+      BOOST_LOG(info) << "Display for app streaming: "sv
+                      << utf_utils::to_utf8(monitor.device_name)
+                      << " primary="sv << (monitor.primary ? "true"sv : "false"sv)
+                      << " rect=("sv << monitor.rect.left << ',' << monitor.rect.top
+                      << ' ' << (monitor.rect.right - monitor.rect.left)
+                      << 'x' << (monitor.rect.bottom - monitor.rect.top) << ')';
+    }
+
+    std::lock_guard lock {vdd_reserved_monitors_mutex};
+    auto target = std::max_element(monitors.begin(), monitors.end(), [](const auto &left, const auto &right) {
+      if (left.primary != right.primary) {
+        return left.primary && !right.primary;
+      }
+      return left.rect.left < right.rect.left;
+    });
+
+    if (target == monitors.end() || target->primary) {
+      return std::nullopt;
+    }
+
+    for (auto pos = target; pos != monitors.end(); ++pos) {
+      if (!pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
+        if (reserve) {
+          vdd_reserved_monitors.emplace(pos->device_name);
+          BOOST_LOG(info) << "Reserved VDD app display: "sv << utf_utils::to_utf8(pos->device_name);
+        }
+        return *pos;
+      }
+    }
+
+    for (auto pos = monitors.begin(); pos != target; ++pos) {
+      if (!pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
+        if (reserve) {
+          vdd_reserved_monitors.emplace(pos->device_name);
+          BOOST_LOG(info) << "Reserved VDD app display: "sv << utf_utils::to_utf8(pos->device_name);
+        }
+        return *pos;
+      }
+    }
+
+    BOOST_LOG(error) << "No unreserved non-primary display is available for VDD app streaming"sv;
+    return std::nullopt;
+  }
+
+  void release_vdd_app(const std::string &output_name) {
+    if (output_name.empty()) {
+      return;
+    }
+
+    auto device_name = utf_utils::from_utf8(output_name);
+    std::lock_guard lock {vdd_reserved_monitors_mutex};
+    if (vdd_reserved_monitors.erase(device_name)) {
+      BOOST_LOG(info) << "Released VDD app display: "sv << output_name;
+    }
+  }
+
+  std::optional<vdd_monitor_t> select_vdd_monitor() {
+    auto monitors = enumerate_monitors();
+    auto target = std::max_element(monitors.begin(), monitors.end(), [](const auto &left, const auto &right) {
+      if (left.primary != right.primary) {
+        return left.primary && !right.primary;
+      }
+      return left.rect.left < right.rect.left;
+    });
+
+    if (target == monitors.end() || target->primary) {
+      return std::nullopt;
+    }
+
+    return *target;
+  }
+
+  bool set_monitor_resolution(const std::wstring &device_name, int width, int height) {
+    DEVMODEW mode {};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(device_name.c_str(), ENUM_CURRENT_SETTINGS, &mode)) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to query display mode for "sv << utf_utils::to_utf8(device_name) << ": "sv << winerr;
+      return false;
+    }
+
+    if ((int) mode.dmPelsWidth == width && (int) mode.dmPelsHeight == height && (int) mode.dmDisplayFrequency >= 60) {
+      BOOST_LOG(info) << "VDD already at requested resolution "sv << width << 'x' << height
+                      << '@' << mode.dmDisplayFrequency << "Hz"sv;
+      return true;
+    }
+
+    BOOST_LOG(info) << "Changing VDD resolution "sv << utf_utils::to_utf8(device_name)
+                    << " from "sv << mode.dmPelsWidth << 'x' << mode.dmPelsHeight
+                    << '@' << mode.dmDisplayFrequency
+                    << " to "sv << width << 'x' << height << "@60"sv;
+
+    mode.dmPelsWidth = width;
+    mode.dmPelsHeight = height;
+    mode.dmDisplayFrequency = 60;
+    mode.dmBitsPerPel = 32;
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
+
+    auto result = ChangeDisplaySettingsExW(device_name.c_str(), &mode, nullptr, CDS_UPDATEREGISTRY, nullptr);
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+      BOOST_LOG(error) << "ChangeDisplaySettingsExW failed for "sv << utf_utils::to_utf8(device_name)
+                       << " with code "sv << result;
+      return false;
+    }
+
+    std::this_thread::sleep_for(2s);
+    return true;
+  }
+
+  struct window_search_context_t {
+    const std::set<DWORD> *pid_tree;
+    std::string match_lower;
+    bool require_pid_tree_match;
+    std::vector<vdd_window_t> candidates;
+  };
+
+  std::atomic<std::uint64_t> vdd_follower_generation {0};
+
+  BOOL CALLBACK enum_vdd_app_windows(HWND hwnd, LPARAM lparam) {
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+      return TRUE;
+    }
+
+    int title_len = GetWindowTextLengthW(hwnd);
+    if (title_len <= 0) {
+      return TRUE;
+    }
+
+    RECT rect {};
+    if (!GetWindowRect(hwnd, &rect)) {
+      return TRUE;
+    }
+
+    auto width = rect.right - rect.left;
+    auto height = rect.bottom - rect.top;
+    if (width < 80 || height < 60) {
+      return TRUE;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0) {
+      return TRUE;
+    }
+
+    std::wstring title_w(title_len + 1, L'\0');
+    GetWindowTextW(hwnd, title_w.data(), title_len + 1);
+    title_w.resize(title_len);
+
+    auto title = utf_utils::to_utf8(title_w);
+    auto process_name = process_name_for_pid(pid);
+
+    auto *ctx = reinterpret_cast<window_search_context_t *>(lparam);
+    bool in_pid_tree = ctx->pid_tree && ctx->pid_tree->count(pid);
+    if (ctx->require_pid_tree_match && !in_pid_tree) {
+      return TRUE;
+    }
+
+    auto title_lower = lower_copy(title);
+    auto process_lower = lower_copy(process_name);
+    if (process_lower == "unitybugreporter.exe"sv || title_lower.find("bug reporter"sv) != std::string::npos) {
+      return TRUE;
+    }
+
+    int score = 0;
+    if (in_pid_tree) {
+      score += 1000;
+    }
+
+    if (!ctx->match_lower.empty()) {
+      if (title_lower.find(ctx->match_lower) != std::string::npos) {
+        score += 300;
+      }
+      if (process_lower.find(ctx->match_lower) != std::string::npos) {
+        score += 500;
+      }
+    }
+
+    if (score > 0) {
+      score += std::min<int>((width * height) / 100000, 200);
+      ctx->candidates.push_back(vdd_window_t {
+        hwnd,
+        pid,
+        std::move(title),
+        std::move(process_name),
+        rect,
+        score,
+      });
+    }
+
+    return TRUE;
+  }
+
+  std::vector<vdd_window_t> collect_vdd_app_windows(std::uint32_t root_process_id, const std::string &match_lower, bool require_pid_tree_match) {
+    auto pid_tree = process_tree_pids(root_process_id);
+    window_search_context_t ctx {
+      &pid_tree,
+      match_lower,
+      require_pid_tree_match,
+      {},
+    };
+
+    EnumWindows(enum_vdd_app_windows, reinterpret_cast<LPARAM>(&ctx));
+    std::sort(ctx.candidates.begin(), ctx.candidates.end(), [](const auto &left, const auto &right) {
+      return left.score > right.score;
+    });
+
+      return ctx.candidates;
+  }
+
+  std::optional<vdd_monitor_t> find_monitor_by_device_name(const std::wstring &device_name) {
+    auto monitors = enumerate_monitors();
+    auto match = std::find_if(monitors.begin(), monitors.end(), [&](const auto &monitor) {
+      return boost::iequals(utf_utils::to_utf8(monitor.device_name), utf_utils::to_utf8(device_name));
+    });
+
+    if (match == monitors.end()) {
+      return std::nullopt;
+    }
+
+    return *match;
+  }
+
+  bool window_fills_monitor(HWND hwnd, const vdd_monitor_t &monitor) {
+    RECT rect {};
+    if (!GetWindowRect(hwnd, &rect)) {
+      return false;
+    }
+
+    return rect.left == monitor.rect.left &&
+           rect.top == monitor.rect.top &&
+           rect.right == monitor.rect.right &&
+           rect.bottom == monitor.rect.bottom;
+  }
+
+  std::optional<vdd_window_t> find_vdd_app_window(std::uint32_t root_process_id, const std::string &match_hint, bool require_pid_tree_match, std::chrono::seconds timeout) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto match_lower = lower_copy(match_hint);
+
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto candidates = collect_vdd_app_windows(root_process_id, match_lower, require_pid_tree_match);
+      if (!candidates.empty()) {
+        return candidates.front();
+      }
+
+      BOOST_LOG(info) << "Waiting for VDD app window matching ["sv << match_hint << "]"sv;
+      std::this_thread::sleep_for(1s);
+    }
+
+    return std::nullopt;
+  }
+
+  bool is_vdd_app_window_ready(const std::string &match_hint) {
+    auto candidates = collect_vdd_app_windows(0, lower_copy(match_hint), false);
+    return !candidates.empty();
+  }
+
+  bool make_window_borderless(HWND hwnd, const vdd_monitor_t &monitor) {
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+    LONG_PTR new_style = style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+    LONG_PTR new_ex_style = ex_style & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+
+    if (new_style == style && new_ex_style == ex_style) {
+      BOOST_LOG(info) << "VDD app window is already borderless"sv;
+    } else {
+      SetLastError(ERROR_SUCCESS);
+      if (SetWindowLongPtrW(hwnd, GWL_STYLE, new_style) == 0 && GetLastError() != ERROR_SUCCESS) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "SetWindowLongPtrW(GWL_STYLE) failed while making app borderless: "sv << winerr;
+      }
+
+      SetLastError(ERROR_SUCCESS);
+      if (SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style) == 0 && GetLastError() != ERROR_SUCCESS) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "SetWindowLongPtrW(GWL_EXSTYLE) failed while making app borderless: "sv << winerr;
+      }
+    }
+
+    auto width = monitor.rect.right - monitor.rect.left;
+    auto height = monitor.rect.bottom - monitor.rect.top;
+    if (!SetWindowPos(hwnd, nullptr, monitor.rect.left, monitor.rect.top, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "SetWindowPos failed while applying borderless VDD bounds: "sv << winerr;
+      return false;
+    }
+
+    BOOST_LOG(info) << "Applied borderless VDD bounds to app window"sv;
+    return true;
+  }
+
+  bool move_window_to_monitor(HWND hwnd, const vdd_monitor_t &monitor, bool borderless) {
+    auto width = monitor.rect.right - monitor.rect.left;
+    auto height = monitor.rect.bottom - monitor.rect.top;
+
+    ShowWindow(hwnd, SW_RESTORE);
+    std::this_thread::sleep_for(200ms);
+
+    if (!SetWindowPos(hwnd, nullptr, monitor.rect.left, monitor.rect.top, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW)) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "SetWindowPos failed while moving app to VDD: "sv << winerr;
+      return false;
+    }
+
+    if (borderless && !make_window_borderless(hwnd, monitor)) {
+      return false;
+    }
+
+    SetForegroundWindow(hwnd);
+    return true;
+  }
+
+  void start_vdd_window_follower(std::uint32_t root_process_id, const std::string &match_hint, const std::wstring &device_name, bool borderless, bool require_pid_tree_match) {
+    std::thread([root_process_id, match_hint, device_name, borderless, require_pid_tree_match]() {
+      auto match_lower = lower_copy(match_hint);
+      auto deadline = std::chrono::steady_clock::now() + 30min;
+      std::set<HWND> handled_windows;
+
+      while (std::chrono::steady_clock::now() < deadline) {
+        auto monitor = find_monitor_by_device_name(device_name);
+        if (!monitor) {
+          BOOST_LOG(warning) << "VDD follower stopped because display disappeared: "sv << utf_utils::to_utf8(device_name);
+          break;
+        }
+
+        auto candidates = collect_vdd_app_windows(root_process_id, match_lower, require_pid_tree_match);
+        for (auto &candidate : candidates) {
+          if (!IsWindow(candidate.hwnd) || handled_windows.count(candidate.hwnd) || window_fills_monitor(candidate.hwnd, *monitor)) {
+            continue;
+          }
+
+          BOOST_LOG(info) << "VDD follower moving window: title=["sv << candidate.title
+                          << "] process=["sv << candidate.process_name
+                          << "] pid="sv << candidate.pid;
+          if (move_window_to_monitor(candidate.hwnd, *monitor, borderless)) {
+            handled_windows.emplace(candidate.hwnd);
+          }
+        }
+
+        std::this_thread::sleep_for(1s);
+      }
+
+      BOOST_LOG(info) << "VDD window follower stopped for match ["sv << match_hint << ']';
+    }).detach();
+  }
+
   std::vector<window_info_t> enumerate_windows() {
     std::vector<window_info_t> results;
 
@@ -1869,5 +2387,57 @@ namespace platf {
     } catch (...) {
       return false;
     }
+  }
+
+  bool prepare_vdd_app(std::uint32_t root_process_id, const std::string &match_hint, int width, int height, bool borderless, bool follow_windows, std::chrono::seconds timeout, std::string &output_name) {
+    if (width <= 0 || height <= 0) {
+      BOOST_LOG(error) << "Invalid VDD app stream size: "sv << width << 'x' << height;
+      return false;
+    }
+
+    auto monitor = select_vdd_monitor(true);
+    if (!monitor) {
+      BOOST_LOG(error) << "No non-primary display is available for VDD app streaming"sv;
+      return false;
+    }
+    auto reserved_device_name = monitor->device_name;
+
+    if (!set_monitor_resolution(monitor->device_name, width, height)) {
+      release_vdd_app(utf_utils::to_utf8(reserved_device_name));
+      return false;
+    }
+
+    monitor = find_monitor_by_device_name(reserved_device_name);
+    if (!monitor) {
+      BOOST_LOG(error) << "VDD display disappeared after resolution change"sv;
+      release_vdd_app(utf_utils::to_utf8(reserved_device_name));
+      return false;
+    }
+
+    bool require_pid_tree_match = root_process_id != 0;
+    auto window = find_vdd_app_window(root_process_id, match_hint, require_pid_tree_match, timeout);
+    if (!window) {
+      BOOST_LOG(error) << "No app window found for VDD app stream; match hint ["sv << match_hint << "]"sv;
+      release_vdd_app(utf_utils::to_utf8(reserved_device_name));
+      return false;
+    }
+
+    BOOST_LOG(info) << "VDD app target resolved: title=["sv << window->title
+                    << "] process=["sv << window->process_name
+                    << "] pid="sv << window->pid
+                    << " hwnd=0x"sv << std::hex << reinterpret_cast<std::uintptr_t>(window->hwnd) << std::dec;
+
+    if (!move_window_to_monitor(window->hwnd, *monitor, borderless)) {
+      release_vdd_app(utf_utils::to_utf8(reserved_device_name));
+      return false;
+    }
+
+    output_name = utf_utils::to_utf8(monitor->device_name);
+    BOOST_LOG(info) << "VDD app capture output selected: "sv << output_name;
+
+    if (follow_windows) {
+      start_vdd_window_follower(root_process_id, match_hint, monitor->device_name, borderless, require_pid_tree_match);
+    }
+    return true;
   }
 }  // namespace platf

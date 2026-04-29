@@ -6,6 +6,8 @@
 
 // standard includes
 #include <atomic>
+#include <optional>
+#include <string>
 
 // local includes
 #include "crypto.h"
@@ -35,6 +37,8 @@ namespace rtsp_stream {
     bool continuous_audio;
     bool enable_hdr;
     bool enable_sops;
+    bool show_cursor;
+    std::string output_name;
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
     std::string rtsp_url_scheme;

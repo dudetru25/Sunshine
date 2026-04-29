@@ -609,7 +609,12 @@ namespace confighttp {
         "exclude-global-prep-cmd",
         "elevated",
         "auto-detach",
-        "wait-all"
+        "wait-all",
+        "show-cursor",
+        "terminate-on-disconnect",
+        "window-borderless",
+        "client-app-window",
+        "client-absolute-mouse"
       };
 
       // List of keys to convert to integers

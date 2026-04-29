@@ -6,6 +6,8 @@
 
 // standard includes
 #include <bitset>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -625,6 +627,24 @@ namespace platf {
    * @return true on success, false if the window is invalid or unsupported.
    */
   bool get_window_client_size(const std::string &window_id, int &out_width, int &out_height);
+
+  /**
+   * @brief Prepare a launched app for isolated virtual-display streaming.
+   * @details On Windows, this finds a non-primary display, sizes it to the requested
+   * stream dimensions when possible, waits for the launched app window, then moves
+   * that window onto the display. Unsupported platforms return false.
+   */
+  bool prepare_vdd_app(std::uint32_t root_process_id, const std::string &match_hint, int width, int height, bool borderless, bool follow_windows, std::chrono::seconds timeout, std::string &output_name);
+
+  /**
+   * @brief Check whether a visible window exists that can be attached to a VDD app stream.
+   */
+  bool is_vdd_app_window_ready(const std::string &match_hint);
+
+  /**
+   * @brief Release a virtual display reserved by prepare_vdd_app().
+   */
+  void release_vdd_app(const std::string &output_name);
 
   /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.

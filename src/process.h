@@ -10,6 +10,8 @@
 
 // standard includes
 #include <optional>
+#include <mutex>
+#include <memory>
 #include <unordered_map>
 
 // lib includes
@@ -66,11 +68,39 @@ namespace proc {
     std::string capture_mode;
     std::string window_match;
     std::string window_resolution;
+    std::string stream_resolution;
+    std::string stream_output_name;
+    std::string client_display_mode;
+    std::string auto_spawn_from;
+    bool client_app_window_set;
+    bool client_app_window;
+    bool client_absolute_mouse_set;
+    bool client_absolute_mouse;
     bool elevated;
     bool auto_detach;
     bool wait_all;
     bool show_cursor;
+    bool terminate_on_disconnect;
+    bool window_borderless;
+    bool attach_existing;
+    bool window_follow;
     std::chrono::seconds exit_timeout;
+  };
+
+  struct session_app_t {
+    int app_id;
+    ctx_t app;
+    std::chrono::steady_clock::time_point launch_time;
+    bool placebo {};
+    std::string output_name;
+
+    boost::process::v1::child process;
+    boost::process::v1::group process_group;
+  };
+
+  struct session_app_state_t {
+    std::mutex mutex;
+    std::unordered_map<std::uint32_t, std::unique_ptr<session_app_t>> apps;
   };
 
   class proc_t {
@@ -83,10 +113,12 @@ namespace proc {
     ):
         _app_id(0),
         _env(std::move(env)),
-        _apps(std::move(apps)) {
+        _apps(std::move(apps)),
+        _session_apps(std::make_shared<session_app_state_t>()) {
     }
 
     int execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
+    int execute_vdd(int app_id, const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
 
     /**
      * @return `_app_id` if a process is running, otherwise returns `0`
@@ -101,6 +133,9 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
     void terminate();
+    void terminate_session(std::uint32_t launch_session_id);
+    bool app_allows_parallel_launch(int app_id) const;
+    bool app_window_ready(int app_id) const;
 
   private:
     int _app_id;
@@ -112,14 +147,14 @@ namespace proc {
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
-    bool _previous_display_cursor {true};
-
     boost::process::v1::child _process;
     boost::process::v1::group _process_group;
 
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
     std::vector<cmd_t>::const_iterator _app_prep_begin;
+
+    std::shared_ptr<session_app_state_t> _session_apps;
   };
 
   /**

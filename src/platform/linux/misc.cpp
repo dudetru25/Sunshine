@@ -1230,6 +1230,18 @@ namespace platf {
     return detected.empty() ? "/dev/dri/renderD128" : detected;
   }
 
+  bool prepare_vdd_app(std::uint32_t, const std::string &, int, int, bool, bool, std::chrono::seconds, std::string &) {
+    BOOST_LOG(error) << "VDD app streaming is only implemented on Windows"sv;
+    return false;
+  }
+
+  bool is_vdd_app_window_ready(const std::string &) {
+    return false;
+  }
+
+  void release_vdd_app(const std::string &) {
+  }
+
 #if !defined(__FreeBSD__)
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_EFFECTIVE {CAP_SYS_ADMIN, CAP_SYS_NICE};
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_PERMITTED {CAP_SYS_ADMIN, CAP_SYS_NICE};

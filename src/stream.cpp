@@ -1091,6 +1091,7 @@ namespace stream {
           }
 
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
+            proc::proc.terminate_session(session->launch_session_id);
             pos = server->_sessions->erase(pos);
 
             if (session->control.peer) {
@@ -1131,11 +1132,11 @@ namespace stream {
         })
       }
 
-      // For window-capture apps, terminate when all sessions disconnect
+      // App-streaming modes can be configured to terminate when all sessions disconnect.
       if (proc::proc.running() > 0 && server->_sessions->empty() && !has_session_awaiting_peer) {
         auto &app = proc::proc.get_running_app();
-        if (app.capture_mode == "window") {
-          BOOST_LOG(info) << "Window capture app: terminating on disconnect"sv;
+        if (app.terminate_on_disconnect) {
+          BOOST_LOG(info) << "Streaming app: terminating on disconnect"sv;
           proc::proc.terminate();
         }
       }
@@ -2020,6 +2021,12 @@ namespace stream {
       session->launch_session_id = launch_session.id;
 
       session->config = config;
+      session->config.monitor.output_name = launch_session.output_name;
+      session->config.monitor.cursor_visible = launch_session.show_cursor;
+      if (!launch_session.output_name.empty()) {
+        BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
+      }
+      BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
