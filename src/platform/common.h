@@ -653,6 +653,17 @@ namespace platf {
   void ensure_cursor_on_display(const std::string &display_name);
 
   /**
+   * @brief Restrict the host cursor to the requested display.
+   * @details If display_name is empty, the platform should use the primary display.
+   */
+  bool confine_cursor_to_display(const std::string &display_name);
+
+  /**
+   * @brief Release any cursor confinement created by confine_cursor_to_display().
+   */
+  void release_cursor_confinement();
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

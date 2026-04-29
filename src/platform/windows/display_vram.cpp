@@ -1330,8 +1330,10 @@ namespace platf::dxgi {
       cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
     }
 
-    if (cursor_visible) {
-      update_cursor_from_win32(device.get(), output.get(), cursor_alpha, cursor_xor, width, height, display_rotation);
+    if (cursor_visible && (!cursor_alpha.texture.get() || (!cursor_alpha.visible && !cursor_xor.visible))) {
+      if (update_cursor_from_win32(device.get(), output.get(), cursor_alpha, cursor_xor, width, height, display_rotation)) {
+        BOOST_LOG(debug) << "Seeded DDUP cursor from Win32 cursor state"sv;
+      }
     }
 
     const bool blend_mouse_cursor_flag = (cursor_alpha.visible || cursor_xor.visible) && cursor_visible;

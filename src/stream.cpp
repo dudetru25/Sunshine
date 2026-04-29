@@ -410,6 +410,7 @@ namespace stream {
     safe::signal_t controlEnd;
 
     std::atomic<session::state_e> state;
+    bool cursor_confined {};
   };
 
   /**
@@ -1947,6 +1948,10 @@ namespace stream {
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input);
+      if (session.cursor_confined) {
+        platf::release_cursor_confinement();
+        session.cursor_confined = false;
+      }
 
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
@@ -2028,7 +2033,7 @@ namespace stream {
       }
       BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
       if (launch_session.output_name.empty() && launch_session.show_cursor) {
-        platf::ensure_cursor_on_display(config::video.output_name);
+        session->cursor_confined = platf::confine_cursor_to_display(config::video.output_name);
       }
 
       session->control.connect_data = launch_session.control_connect_data;

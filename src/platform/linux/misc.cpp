@@ -1245,6 +1245,13 @@ namespace platf {
   void ensure_cursor_on_display(const std::string &) {
   }
 
+  bool confine_cursor_to_display(const std::string &) {
+    return false;
+  }
+
+  void release_cursor_confinement() {
+  }
+
 #if !defined(__FreeBSD__)
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_EFFECTIVE {CAP_SYS_ADMIN, CAP_SYS_NICE};
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_PERMITTED {CAP_SYS_ADMIN, CAP_SYS_NICE};

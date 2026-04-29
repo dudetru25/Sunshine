@@ -579,6 +579,13 @@ namespace platf {
 
   void ensure_cursor_on_display(const std::string &) {
   }
+
+  bool confine_cursor_to_display(const std::string &) {
+    return false;
+  }
+
+  void release_cursor_confinement() {
+  }
 }  // namespace platf
 
 namespace dyn {

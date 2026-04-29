@@ -1961,8 +1961,31 @@ namespace platf {
     return monitors;
   }
 
+  std::optional<vdd_monitor_t> monitor_for_display_name(const std::string &display_name) {
+    auto monitors = enumerate_monitors();
+    if (monitors.empty()) {
+      return std::nullopt;
+    }
+
+    if (!display_name.empty()) {
+      auto match = std::find_if(monitors.begin(), monitors.end(), [&](const auto &monitor) {
+        return boost::iequals(utf_utils::to_utf8(monitor.device_name), display_name);
+      });
+      if (match != monitors.end()) {
+        return *match;
+      }
+    }
+
+    auto primary = std::find_if(monitors.begin(), monitors.end(), [](const auto &monitor) {
+      return monitor.primary;
+    });
+    return primary != monitors.end() ? *primary : monitors.front();
+  }
+
   std::mutex vdd_reserved_monitors_mutex;
   std::set<std::wstring> vdd_reserved_monitors;
+  std::mutex cursor_confinement_mutex;
+  bool cursor_confinement_active {};
 
   std::optional<vdd_monitor_t> select_vdd_monitor(bool reserve) {
     auto monitors = enumerate_monitors();
@@ -2197,27 +2220,9 @@ namespace platf {
   }
 
   void ensure_cursor_on_display(const std::string &display_name) {
-    auto monitors = enumerate_monitors();
-    if (monitors.empty()) {
-      return;
-    }
-
-    std::optional<vdd_monitor_t> target;
-    if (!display_name.empty()) {
-      auto display_name_w = utf_utils::from_utf8(display_name);
-      auto match = std::find_if(monitors.begin(), monitors.end(), [&](const auto &monitor) {
-        return boost::iequals(utf_utils::to_utf8(monitor.device_name), utf_utils::to_utf8(display_name_w));
-      });
-      if (match != monitors.end()) {
-        target = *match;
-      }
-    }
-
+    auto target = monitor_for_display_name(display_name);
     if (!target) {
-      auto primary = std::find_if(monitors.begin(), monitors.end(), [](const auto &monitor) {
-        return monitor.primary;
-      });
-      target = primary != monitors.end() ? *primary : monitors.front();
+      return;
     }
 
     POINT cursor {};
@@ -2234,6 +2239,45 @@ namespace platf {
     } else {
       BOOST_LOG(warning) << "Failed to move cursor onto desktop capture display: "sv << GetLastError();
     }
+  }
+
+  bool confine_cursor_to_display(const std::string &display_name) {
+    auto target = monitor_for_display_name(display_name);
+    if (!target) {
+      BOOST_LOG(warning) << "Unable to confine cursor because no desktop capture display was found"sv;
+      return false;
+    }
+
+    ensure_cursor_on_display(display_name);
+
+    std::lock_guard lock {cursor_confinement_mutex};
+    if (!ClipCursor(&target->rect)) {
+      BOOST_LOG(warning) << "Failed to confine cursor to desktop capture display: "sv << GetLastError();
+      return false;
+    }
+
+    cursor_confinement_active = true;
+    BOOST_LOG(info) << "Confined cursor to desktop capture display: "sv
+                    << utf_utils::to_utf8(target->device_name)
+                    << " rect=("sv << target->rect.left << ',' << target->rect.top
+                    << ' ' << (target->rect.right - target->rect.left)
+                    << 'x' << (target->rect.bottom - target->rect.top) << ')';
+    return true;
+  }
+
+  void release_cursor_confinement() {
+    std::lock_guard lock {cursor_confinement_mutex};
+    if (!cursor_confinement_active) {
+      return;
+    }
+
+    if (!ClipCursor(nullptr)) {
+      BOOST_LOG(warning) << "Failed to release desktop cursor confinement: "sv << GetLastError();
+      return;
+    }
+
+    cursor_confinement_active = false;
+    BOOST_LOG(info) << "Released desktop cursor confinement"sv;
   }
 
   bool window_fills_monitor(HWND hwnd, const vdd_monitor_t &monitor) {
