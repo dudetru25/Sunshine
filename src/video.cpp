@@ -1465,7 +1465,9 @@ namespace video {
         return true;
       };
 
-      auto cursor_visible = capture_ctxs.front().config.cursor_visible;
+      // Keep normal desktop/display streaming on Sunshine's original global cursor path.
+      // VDD app-window sessions use per-session cursor state so the server cursor stays hidden.
+      auto cursor_visible = capture_ctxs.front().config.output_name.empty() ? display_cursor : capture_ctxs.front().config.cursor_visible;
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &cursor_visible);
 
       if (artificial_reinit && status != platf::capture_e::error) {
@@ -2440,7 +2442,7 @@ namespace video {
         return true;
       };
 
-      auto cursor_visible = synced_session_ctxs.front()->config.cursor_visible;
+      auto cursor_visible = synced_session_ctxs.front()->config.output_name.empty() ? display_cursor : synced_session_ctxs.front()->config.cursor_visible;
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &cursor_visible);
       switch (status) {
         case platf::capture_e::reinit:
