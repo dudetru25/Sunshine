@@ -2137,10 +2137,16 @@ namespace platf {
     }
 
     if (!ctx->match_lower.empty()) {
-      if (title_lower.find(ctx->match_lower) != std::string::npos) {
+      bool title_match = title_lower.find(ctx->match_lower) != std::string::npos;
+      bool process_match = process_lower.find(ctx->match_lower) != std::string::npos;
+      if (ctx->require_pid_tree_match && !title_match && !process_match) {
+        return TRUE;
+      }
+
+      if (title_match) {
         score += 300;
       }
-      if (process_lower.find(ctx->match_lower) != std::string::npos) {
+      if (process_match) {
         score += 500;
       }
     }
