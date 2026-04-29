@@ -647,6 +647,12 @@ namespace platf {
   void release_vdd_app(const std::string &output_name);
 
   /**
+   * @brief Ensure the host cursor is visible on the requested display.
+   * @details If display_name is empty, the platform should use the primary display.
+   */
+  void ensure_cursor_on_display(const std::string &display_name);
+
+  /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */

@@ -1242,6 +1242,9 @@ namespace platf {
   void release_vdd_app(const std::string &) {
   }
 
+  void ensure_cursor_on_display(const std::string &) {
+  }
+
 #if !defined(__FreeBSD__)
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_EFFECTIVE {CAP_SYS_ADMIN, CAP_SYS_NICE};
   constexpr std::array<cap_value_t, 2> ELEVATED_PRIVILEGES_PERMITTED {CAP_SYS_ADMIN, CAP_SYS_NICE};

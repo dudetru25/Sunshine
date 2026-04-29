@@ -2196,6 +2196,46 @@ namespace platf {
     return *match;
   }
 
+  void ensure_cursor_on_display(const std::string &display_name) {
+    auto monitors = enumerate_monitors();
+    if (monitors.empty()) {
+      return;
+    }
+
+    std::optional<vdd_monitor_t> target;
+    if (!display_name.empty()) {
+      auto display_name_w = utf_utils::from_utf8(display_name);
+      auto match = std::find_if(monitors.begin(), monitors.end(), [&](const auto &monitor) {
+        return boost::iequals(utf_utils::to_utf8(monitor.device_name), utf_utils::to_utf8(display_name_w));
+      });
+      if (match != monitors.end()) {
+        target = *match;
+      }
+    }
+
+    if (!target) {
+      auto primary = std::find_if(monitors.begin(), monitors.end(), [](const auto &monitor) {
+        return monitor.primary;
+      });
+      target = primary != monitors.end() ? *primary : monitors.front();
+    }
+
+    POINT cursor {};
+    if (GetCursorPos(&cursor) && PtInRect(&target->rect, cursor)) {
+      return;
+    }
+
+    auto x = target->rect.left + (target->rect.right - target->rect.left) / 2;
+    auto y = target->rect.top + (target->rect.bottom - target->rect.top) / 2;
+    if (SetCursorPos(x, y)) {
+      BOOST_LOG(info) << "Moved cursor onto desktop capture display: "sv
+                      << utf_utils::to_utf8(target->device_name)
+                      << " at "sv << x << 'x' << y;
+    } else {
+      BOOST_LOG(warning) << "Failed to move cursor onto desktop capture display: "sv << GetLastError();
+    }
+  }
+
   bool window_fills_monitor(HWND hwnd, const vdd_monitor_t &monitor) {
     RECT rect {};
     if (!GetWindowRect(hwnd, &rect)) {

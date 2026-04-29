@@ -2027,6 +2027,9 @@ namespace stream {
         BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
       }
       BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
+      if (launch_session.output_name.empty() && launch_session.show_cursor) {
+        platf::ensure_cursor_on_display(config::video.output_name);
+      }
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

@@ -576,6 +576,9 @@ namespace platf {
 
   void release_vdd_app(const std::string &) {
   }
+
+  void ensure_cursor_on_display(const std::string &) {
+  }
 }  // namespace platf
 
 namespace dyn {
