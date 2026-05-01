@@ -1426,38 +1426,76 @@ namespace platf::dxgi {
       cursor_img[i + 3] = 0xFF;
     };
 
-    constexpr const char *arrow[] {
-      "#",
-      "##",
-      "#W#",
-      "#WW#",
-      "#WWW#",
-      "#WWWW#",
-      "#WWWWW#",
-      "#WWWWWW#",
-      "#WWWWWWW#",
-      "#WWWWWWWW#",
-      "#WWWWWWWWW#",
-      "#WWWWWWWWWW#",
-      "#WWWWWWWWWWW#",
-      "#WWWW#######",
-      "#WWW#",
-      "#WW#",
-      "#W#",
-      "##",
-      "#",
+    struct cursor_point_t {
+      float x;
+      float y;
     };
 
-    constexpr auto row_count = sizeof(arrow) / sizeof(arrow[0]);
-    for (LONG y = 0; y < cursor_height && y < static_cast<LONG>(row_count); ++y) {
-      const auto row = arrow[y];
-      for (LONG x = 0; row[x] != '\0' && x < cursor_width; ++x) {
-        if (row[x] == '#') {
-          put_pixel(x, y, 0x00);
-        } else if (row[x] == 'W') {
+    constexpr cursor_point_t arrow[] {
+      {1.0f, 1.0f},
+      {1.0f, 22.0f},
+      {6.0f, 17.0f},
+      {9.0f, 26.0f},
+      {13.0f, 24.0f},
+      {10.0f, 15.0f},
+      {17.0f, 15.0f},
+    };
+    constexpr auto point_count = sizeof(arrow) / sizeof(arrow[0]);
+
+    auto point_inside_arrow = [&](float x, float y) {
+      bool inside = false;
+      for (std::size_t i = 0, j = point_count - 1; i < point_count; j = i++) {
+        const auto &a = arrow[i];
+        const auto &b = arrow[j];
+        if ((a.y > y) != (b.y > y) &&
+            x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+
+    for (LONG y = 0; y < cursor_height; ++y) {
+      for (LONG x = 0; x < cursor_width; ++x) {
+        if (point_inside_arrow(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f)) {
           put_pixel(x, y, 0xFF);
         }
       }
+    }
+
+    auto draw_line = [&](LONG x0, LONG y0, LONG x1, LONG y1) {
+      auto abs_int = [](LONG value) {
+        return value < 0 ? -value : value;
+      };
+
+      LONG dx = abs_int(x1 - x0);
+      LONG sx = x0 < x1 ? 1 : -1;
+      LONG dy = -abs_int(y1 - y0);
+      LONG sy = y0 < y1 ? 1 : -1;
+      LONG error = dx + dy;
+
+      while (true) {
+        put_pixel(x0, y0, 0x00);
+        if (x0 == x1 && y0 == y1) {
+          break;
+        }
+
+        LONG error2 = 2 * error;
+        if (error2 >= dy) {
+          error += dy;
+          x0 += sx;
+        }
+        if (error2 <= dx) {
+          error += dx;
+          y0 += sy;
+        }
+      }
+    };
+
+    for (std::size_t i = 0; i < point_count; ++i) {
+      const auto &a = arrow[i];
+      const auto &b = arrow[(i + 1) % point_count];
+      draw_line(static_cast<LONG>(a.x), static_cast<LONG>(a.y), static_cast<LONG>(b.x), static_cast<LONG>(b.y));
     }
 
     return cursor_img;
