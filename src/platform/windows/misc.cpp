@@ -1869,6 +1869,7 @@ namespace platf {
     std::wstring device_name;
     RECT rect {};
     bool primary {};
+    bool vdd {};
   };
 
   struct vdd_window_t {
@@ -1903,6 +1904,41 @@ namespace platf {
 
     CloseHandle(proc);
     return exe_name;
+  }
+
+  bool display_device_matches_vdd(const DISPLAY_DEVICEW &device) {
+    auto text = lower_copy(
+      utf_utils::to_utf8(device.DeviceName) + " " +
+      utf_utils::to_utf8(device.DeviceString) + " " +
+      utf_utils::to_utf8(device.DeviceID)
+    );
+
+    return text.find("virtual display driver"sv) != std::string::npos ||
+           text.find("mtt"sv) != std::string::npos ||
+           text.find("mtt1337"sv) != std::string::npos;
+  }
+
+  bool is_vdd_display(const std::wstring &device_name) {
+    for (DWORD index = 0; index < 32; ++index) {
+      DISPLAY_DEVICEW adapter {};
+      adapter.cb = sizeof(adapter);
+      if (!EnumDisplayDevicesW(nullptr, index, &adapter, 0)) {
+        break;
+      }
+
+      if (device_name != adapter.DeviceName) {
+        continue;
+      }
+
+      DISPLAY_DEVICEW monitor {};
+      monitor.cb = sizeof(monitor);
+      const bool monitor_matches = EnumDisplayDevicesW(adapter.DeviceName, 0, &monitor, 0) && display_device_matches_vdd(monitor);
+      return display_device_matches_vdd(adapter) || monitor_matches;
+    }
+
+    DISPLAY_DEVICEW monitor {};
+    monitor.cb = sizeof(monitor);
+    return EnumDisplayDevicesW(device_name.c_str(), 0, &monitor, 0) && display_device_matches_vdd(monitor);
   }
 
   std::set<DWORD> process_tree_pids(DWORD root_pid) {
@@ -1954,6 +1990,7 @@ namespace platf {
         info.szDevice,
         info.rcMonitor,
         (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+        is_vdd_display(info.szDevice),
       });
       return TRUE;
     }, reinterpret_cast<LPARAM>(&monitors));
@@ -1993,6 +2030,7 @@ namespace platf {
       BOOST_LOG(info) << "Display for app streaming: "sv
                       << utf_utils::to_utf8(monitor.device_name)
                       << " primary="sv << (monitor.primary ? "true"sv : "false"sv)
+                      << " vdd="sv << (monitor.vdd ? "true"sv : "false"sv)
                       << " rect=("sv << monitor.rect.left << ',' << monitor.rect.top
                       << ' ' << (monitor.rect.right - monitor.rect.left)
                       << 'x' << (monitor.rect.bottom - monitor.rect.top) << ')';
@@ -2011,7 +2049,7 @@ namespace platf {
     }
 
     for (auto pos = target; pos != monitors.end(); ++pos) {
-      if (!pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
+      if (pos->vdd && !pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
         if (reserve) {
           vdd_reserved_monitors.emplace(pos->device_name);
           BOOST_LOG(info) << "Reserved VDD app display: "sv << utf_utils::to_utf8(pos->device_name);
@@ -2021,7 +2059,7 @@ namespace platf {
     }
 
     for (auto pos = monitors.begin(); pos != target; ++pos) {
-      if (!pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
+      if (pos->vdd && !pos->primary && !vdd_reserved_monitors.count(pos->device_name)) {
         if (reserve) {
           vdd_reserved_monitors.emplace(pos->device_name);
           BOOST_LOG(info) << "Reserved VDD app display: "sv << utf_utils::to_utf8(pos->device_name);
@@ -2030,7 +2068,7 @@ namespace platf {
       }
     }
 
-    BOOST_LOG(error) << "No unreserved non-primary display is available for VDD app streaming"sv;
+    BOOST_LOG(error) << "No unreserved non-primary VDD display is available for app streaming"sv;
     return std::nullopt;
   }
 
@@ -2060,6 +2098,72 @@ namespace platf {
     }
 
     return *target;
+  }
+
+  bool detach_vdd_monitor(const std::wstring &device_name) {
+    DEVMODEW mode {};
+    mode.dmSize = sizeof(mode);
+    mode.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+    mode.dmPosition.x = 0;
+    mode.dmPosition.y = 0;
+    mode.dmPelsWidth = 0;
+    mode.dmPelsHeight = 0;
+
+    auto result = ChangeDisplaySettingsExW(device_name.c_str(), &mode, nullptr, CDS_UPDATEREGISTRY | CDS_NORESET, nullptr);
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+      BOOST_LOG(warning) << "Failed to stage VDD display detach for "sv << utf_utils::to_utf8(device_name)
+                         << ": "sv << result;
+      return false;
+    }
+
+    BOOST_LOG(info) << "Staged VDD display detach: "sv << utf_utils::to_utf8(device_name);
+    return true;
+  }
+
+  void disable_vdd_app_displays() {
+    std::vector<vdd_monitor_t> detach_candidates;
+    {
+      std::lock_guard lock {vdd_reserved_monitors_mutex};
+      for (const auto &monitor : enumerate_monitors()) {
+        if (!monitor.vdd || monitor.primary) {
+          continue;
+        }
+
+        if (vdd_reserved_monitors.count(monitor.device_name)) {
+          BOOST_LOG(info) << "Keeping reserved VDD display attached: "sv << utf_utils::to_utf8(monitor.device_name);
+          continue;
+        }
+
+        detach_candidates.push_back(monitor);
+      }
+    }
+
+    if (detach_candidates.empty()) {
+      return;
+    }
+
+    bool changed = false;
+    for (const auto &monitor : detach_candidates) {
+      BOOST_LOG(info) << "Desktop mode detaching unreserved VDD display: "sv
+                      << utf_utils::to_utf8(monitor.device_name)
+                      << " rect=("sv << monitor.rect.left << ',' << monitor.rect.top
+                      << ' ' << (monitor.rect.right - monitor.rect.left)
+                      << 'x' << (monitor.rect.bottom - monitor.rect.top) << ')';
+      changed = detach_vdd_monitor(monitor.device_name) || changed;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    auto result = ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+      BOOST_LOG(warning) << "Failed to apply VDD display detach changes: "sv << result;
+      return;
+    }
+
+    BOOST_LOG(info) << "Applied VDD display detach changes for desktop mode"sv;
+    std::this_thread::sleep_for(500ms);
   }
 
   bool set_monitor_resolution(const std::wstring &device_name, int width, int height) {

@@ -638,7 +638,7 @@ namespace input {
     const auto count = ++mouse_button_packet_count;
     if (should_log_input_packet(count)) {
       BOOST_LOG(info) << "Moonlight mouse button packet #"sv << count
-                      << ": button="sv << button
+                      << ": button="sv << static_cast<int>(button)
                       << " release="sv << release;
     }
     if (button > 0 && button < mouse_press.size()) {

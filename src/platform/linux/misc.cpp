@@ -1242,6 +1242,9 @@ namespace platf {
   void release_vdd_app(const std::string &) {
   }
 
+  void disable_vdd_app_displays() {
+  }
+
   void ensure_cursor_on_display(const std::string &) {
   }
 

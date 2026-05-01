@@ -647,6 +647,11 @@ namespace platf {
   void release_vdd_app(const std::string &output_name);
 
   /**
+   * @brief Detach unreserved virtual displays used for app streaming.
+   */
+  void disable_vdd_app_displays();
+
+  /**
    * @brief Ensure the host cursor is visible on the requested display.
    * @details If display_name is empty, the platform should use the primary display.
    */
