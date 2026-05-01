@@ -1365,6 +1365,9 @@ namespace platf::dxgi {
     if (!make_win32_cursor_texture(cursor_handle, cursor_width, cursor_height, cursor_texture)) {
       return false;
     }
+    if (!cursor_texture.alpha_visible && !cursor_texture.xor_visible) {
+      return false;
+    }
 
     DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info {};
     shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
@@ -1408,24 +1411,78 @@ namespace platf::dxgi {
     return true;
   }
 
+  util::buffer_t<std::uint8_t> make_builtin_arrow_cursor_image(LONG cursor_width, LONG cursor_height) {
+    util::buffer_t<std::uint8_t> cursor_img(cursor_width * cursor_height * 4, 0);
+
+    auto put_pixel = [&](LONG x, LONG y, std::uint8_t value) {
+      if (x < 0 || y < 0 || x >= cursor_width || y >= cursor_height) {
+        return;
+      }
+
+      const auto i = (y * cursor_width + x) * 4;
+      cursor_img[i] = value;
+      cursor_img[i + 1] = value;
+      cursor_img[i + 2] = value;
+      cursor_img[i + 3] = 0xFF;
+    };
+
+    constexpr const char *arrow[] {
+      "#",
+      "##",
+      "#W#",
+      "#WW#",
+      "#WWW#",
+      "#WWWW#",
+      "#WWWWW#",
+      "#WWWWWW#",
+      "#WWWWWWW#",
+      "#WWWWWWWW#",
+      "#WWWWWWWWW#",
+      "#WWWWWWWWWW#",
+      "#WWWWWWWWWWW#",
+      "#WWWW#######",
+      "#WWW#",
+      "#WW#",
+      "#W#",
+      "##",
+      "#",
+    };
+
+    constexpr auto row_count = sizeof(arrow) / sizeof(arrow[0]);
+    for (LONG y = 0; y < cursor_height && y < static_cast<LONG>(row_count); ++y) {
+      const auto row = arrow[y];
+      for (LONG x = 0; row[x] != '\0' && x < cursor_width; ++x) {
+        if (row[x] == '#') {
+          put_pixel(x, y, 0x00);
+        } else if (row[x] == 'W') {
+          put_pixel(x, y, 0xFF);
+        }
+      }
+    }
+
+    return cursor_img;
+  }
+
   bool seed_default_arrow_cursor_texture(device_t::pointer device, gpu_cursor_t &cursor_alpha, gpu_cursor_t &cursor_xor, bool &alpha_visible, bool &xor_visible) {
-    auto arrow_cursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-    if (!arrow_cursor) {
+    constexpr LONG cursor_width = 32;
+    constexpr LONG cursor_height = 32;
+
+    DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info {};
+    shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+    shape_info.Width = cursor_width;
+    shape_info.Height = cursor_height;
+    shape_info.Pitch = cursor_width * 4;
+
+    auto alpha_cursor_img = make_builtin_arrow_cursor_image(cursor_width, cursor_height);
+    util::buffer_t<std::uint8_t> xor_cursor_img;
+    if (!set_cursor_texture(device, cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
+        !set_cursor_texture(device, cursor_xor, std::move(xor_cursor_img), shape_info)) {
       return false;
     }
 
-    LONG cursor_width {};
-    LONG cursor_height {};
-    if (!get_cursor_dimensions(arrow_cursor, cursor_width, cursor_height)) {
-      cursor_width = GetSystemMetrics(SM_CXCURSOR);
-      cursor_height = GetSystemMetrics(SM_CYCURSOR);
-    }
-
-    if (!set_cursor_texture_from_handle(device, arrow_cursor, cursor_width, cursor_height, cursor_alpha, cursor_xor, alpha_visible, xor_visible)) {
-      return false;
-    }
-
-    BOOST_LOG(info) << "Seeded default DDUP arrow cursor texture: size="sv << cursor_width << 'x' << cursor_height;
+    alpha_visible = true;
+    xor_visible = false;
+    BOOST_LOG(info) << "Seeded built-in DDUP arrow cursor texture: size="sv << cursor_width << 'x' << cursor_height;
     return true;
   }
 
