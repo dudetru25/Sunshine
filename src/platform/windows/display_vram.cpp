@@ -1149,11 +1149,31 @@ namespace platf::dxgi {
     constexpr auto size = 32;
     util::buffer_t<std::uint8_t> cursor_img(size * size * 4);
 
-    for (std::size_t i = 0; i < cursor_img.size(); i += 4) {
-      cursor_img[i + 0] = 0xFF;
-      cursor_img[i + 1] = 0xFF;
-      cursor_img[i + 2] = 0xFF;
-      cursor_img[i + 3] = 0xFF;
+    auto set_pixel = [&](int x, int y, std::uint8_t blue, std::uint8_t green, std::uint8_t red, std::uint8_t alpha) {
+      auto index = (y * size + x) * 4;
+      cursor_img[index + 0] = blue;
+      cursor_img[index + 1] = green;
+      cursor_img[index + 2] = red;
+      cursor_img[index + 3] = alpha;
+    };
+
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        if (x == 0 || y == 0 || x == size - 1 || y == size - 1) {
+          set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
+        }
+      }
+    }
+
+    for (int i = 0; i < 10; ++i) {
+      set_pixel(i, 0, 0x00, 0x00, 0x00, 0xFF);
+      set_pixel(0, i, 0x00, 0x00, 0x00, 0xFF);
+    }
+
+    for (int y = 1; y < 7; ++y) {
+      for (int x = 1; x < 7; ++x) {
+        set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
+      }
     }
 
     return cursor_img;

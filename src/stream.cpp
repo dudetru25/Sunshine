@@ -2033,7 +2033,7 @@ namespace stream {
       }
       BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
       if (launch_session.output_name.empty() && launch_session.show_cursor) {
-        session->cursor_confined = platf::confine_cursor_to_display(config::video.output_name);
+        platf::ensure_cursor_on_display(config::video.output_name);
       }
 
       session->control.connect_data = launch_session.control_connect_data;

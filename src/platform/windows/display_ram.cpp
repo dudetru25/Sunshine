@@ -176,8 +176,35 @@ namespace platf::dxgi {
     cursor.shape_info.Width = size;
     cursor.shape_info.Height = size;
     cursor.shape_info.Pitch = size * 4;
-    cursor.img_data.assign(size * size * 4, 0xFF);
+    cursor.img_data.assign(size * size * 4, 0x00);
     cursor.visible = true;
+
+    auto set_pixel = [&](int x, int y, std::uint8_t blue, std::uint8_t green, std::uint8_t red, std::uint8_t alpha) {
+      auto index = (y * size + x) * 4;
+      cursor.img_data[index + 0] = blue;
+      cursor.img_data[index + 1] = green;
+      cursor.img_data[index + 2] = red;
+      cursor.img_data[index + 3] = alpha;
+    };
+
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        if (x == 0 || y == 0 || x == size - 1 || y == size - 1) {
+          set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
+        }
+      }
+    }
+
+    for (int i = 0; i < 10; ++i) {
+      set_pixel(i, 0, 0x00, 0x00, 0x00, 0xFF);
+      set_pixel(0, i, 0x00, 0x00, 0x00, 0xFF);
+    }
+
+    for (int y = 1; y < 7; ++y) {
+      for (int x = 1; x < 7; ++x) {
+        set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
+      }
+    }
   }
 
   capture_e display_ddup_ram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
