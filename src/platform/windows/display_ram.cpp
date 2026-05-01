@@ -168,6 +168,18 @@ namespace platf::dxgi {
     }
   }
 
+  void set_ddup_cursor_test_box(cursor_t &cursor) {
+    constexpr auto size = 32;
+
+    cursor.shape_info = {};
+    cursor.shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+    cursor.shape_info.Width = size;
+    cursor.shape_info.Height = size;
+    cursor.shape_info.Pitch = size * 4;
+    cursor.img_data.assign(size * size * 4, 0xFF);
+    cursor.visible = true;
+  }
+
   capture_e display_ddup_ram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     HRESULT status;
     DXGI_OUTDUPL_FRAME_INFO frame_info;
@@ -206,12 +218,41 @@ namespace platf::dxgi {
 
         return capture_e::error;
       }
+
+      if (!ddup_cursor_shape_logged) {
+        BOOST_LOG(info) << "DDUP RAM cursor shape fetched: type="sv << cursor.shape_info.Type
+                        << " size="sv << cursor.shape_info.Width << 'x' << cursor.shape_info.Height
+                        << " pitch="sv << cursor.shape_info.Pitch
+                        << " buffer="sv << frame_info.PointerShapeBufferSize
+                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                        << " session_cursor_visible="sv << cursor_visible;
+        ddup_cursor_shape_logged = true;
+      }
+      ddup_cursor_test_box_ready = false;
     }
 
     if (frame_info.LastMouseUpdateTime.QuadPart) {
       cursor.x = frame_info.PointerPosition.Position.x;
       cursor.y = frame_info.PointerPosition.Position.y;
-      cursor.visible = frame_info.PointerPosition.Visible;
+      cursor.visible = true;
+
+      if (!ddup_cursor_position_logged) {
+        BOOST_LOG(info) << "DDUP RAM cursor position update: x="sv << cursor.x
+                        << " y="sv << cursor.y
+                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                        << " forced_visible_for_test_box="sv << cursor_visible;
+        ddup_cursor_position_logged = true;
+      }
+    }
+
+    if (cursor_visible && !ddup_cursor_test_box_ready) {
+      set_ddup_cursor_test_box(cursor);
+      ddup_cursor_test_box_ready = true;
+
+      if (!ddup_cursor_test_box_logged) {
+        BOOST_LOG(info) << "DDUP RAM cursor diagnostic white box active: 32x32 session_cursor_visible="sv << cursor_visible;
+        ddup_cursor_test_box_logged = true;
+      }
     }
 
     if (frame_update_flag) {

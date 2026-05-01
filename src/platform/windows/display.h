@@ -76,10 +76,10 @@ namespace platf::dxgi {
   struct cursor_t {
     std::vector<std::uint8_t> img_data;
 
-    DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info;
-    int x;
-    int y;
-    bool visible;
+    DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info {};
+    int x = 0;
+    int y = 0;
+    bool visible = false;
   };
 
   class gpu_cursor_t {
@@ -314,6 +314,10 @@ namespace platf::dxgi {
 
     duplication_t dup;
     cursor_t cursor;
+    bool ddup_cursor_test_box_ready = false;
+    bool ddup_cursor_test_box_logged = false;
+    bool ddup_cursor_shape_logged = false;
+    bool ddup_cursor_position_logged = false;
   };
 
   /**
