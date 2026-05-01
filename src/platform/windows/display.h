@@ -177,6 +177,8 @@ namespace platf::dxgi {
     int dwm_border_left = 0;
     int dwm_border_top = 0;
 
+    bool app_streaming = false;
+
     int client_frame_rate;
     DXGI_RATIONAL client_frame_rate_strict;
 

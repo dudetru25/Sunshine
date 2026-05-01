@@ -442,6 +442,7 @@ namespace platf::dxgi {
 
   int display_base_t::init(const ::video::config_t &config, const std::string &display_name) {
     std::once_flag windows_cpp_once_flag;
+    app_streaming = config.app_streaming;
 
     std::call_once(windows_cpp_once_flag, []() {
       DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
@@ -1000,6 +1001,7 @@ namespace platf::dxgi {
 
   int display_base_t::init_for_window(const ::video::config_t &config, HWND hwnd) {
     BOOST_LOG(info) << "[WinCap] init_for_window() starting for HWND "sv << (void *) hwnd;
+    app_streaming = config.app_streaming;
 
     {
       DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
@@ -1117,7 +1119,7 @@ namespace platf {
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
     // Window capture path: use DDUP with window-region crop
-    if (!config.window_id.empty()) {
+    if (config.app_streaming && !config.window_id.empty()) {
       BOOST_LOG(info) << "[WinCap] Entering window capture path for HWND: "sv << config.window_id;
       try {
         auto hwnd = reinterpret_cast<HWND>(std::stoull(config.window_id, nullptr, 16));

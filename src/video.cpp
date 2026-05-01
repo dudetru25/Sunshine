@@ -1200,14 +1200,20 @@ namespace video {
   }
 
   std::string capture_output_name(const config_t &config) {
+    if (!config.app_streaming) {
+      return display_device::map_output_name(config::video.output_name);
+    }
+
     return display_device::map_output_name(config.output_name.empty() ? config::video.output_name : config.output_name);
   }
 
   std::string capture_thread_key(const config_t &config) {
     std::stringstream key;
-    key << capture_output_name(config)
-        << "|window=" << config.window_id
-        << "|cursor=" << (config.cursor_visible ? "1" : "0");
+    key << capture_output_name(config);
+    if (config.app_streaming) {
+      key << "|window=" << config.window_id
+          << "|cursor=" << (config.cursor_visible ? "1" : "0");
+    }
     return key.str();
   }
 
@@ -1466,7 +1472,8 @@ namespace video {
       };
 
       auto cursor_visible = capture_ctxs.front().config.cursor_visible;
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &cursor_visible);
+      auto *cursor_visible_p = capture_ctxs.front().config.app_streaming ? &cursor_visible : &display_cursor;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, cursor_visible_p);
 
       if (artificial_reinit && status != platf::capture_e::error) {
         status = platf::capture_e::reinit;
@@ -2441,7 +2448,8 @@ namespace video {
       };
 
       auto cursor_visible = synced_session_ctxs.front()->config.cursor_visible;
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &cursor_visible);
+      auto *cursor_visible_p = synced_session_ctxs.front()->config.app_streaming ? &cursor_visible : &display_cursor;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, cursor_visible_p);
       switch (status) {
         case platf::capture_e::reinit:
         case platf::capture_e::error:

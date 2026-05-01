@@ -44,6 +44,7 @@ namespace video {
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
 
+    bool app_streaming {false};  // Enables per-app capture overrides; false keeps stock desktop behavior.
     std::string window_id;  // HWND as hex string for window capture, empty = monitor capture
     std::string output_name;  // Per-session monitor override, empty = global video output_name
     bool cursor_visible {true};  // Per-session cursor compositing override

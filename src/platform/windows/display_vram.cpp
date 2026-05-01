@@ -216,7 +216,10 @@ namespace platf::dxgi {
     std::uint32_t transparent = 0;
   };
 
-  util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
+  util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info, bool flatten_monochrome) {
+    constexpr std::uint32_t inverted = 0xFFFFFFFF;
+    constexpr std::uint32_t transparent = 0;
+
     switch (shape_info.Type) {
       case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
         // This type doesn't require any XOR-blending
@@ -240,18 +243,51 @@ namespace platf::dxgi {
           return cursor_img;
         }
       case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
-        // Monochrome cursor XOR pixels are flattened into the alpha image below.
-        // This avoids depending on GPU invert blending for the normal Windows arrow.
-        return {};
+        if (flatten_monochrome) {
+          // App streams flatten monochrome XOR pixels into the alpha image.
+          return {};
+        }
+        break;
       default:
         BOOST_LOG(error) << "Invalid cursor shape type: " << shape_info.Type;
         return {};
     }
 
-    return {};
+    shape_info.Height /= 2;
+
+    util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
+
+    auto bytes = shape_info.Pitch * shape_info.Height;
+    auto pixel_data = (std::uint32_t *) std::begin(cursor_img);
+    auto and_mask = std::begin(img_data);
+    auto xor_mask = std::begin(img_data) + bytes;
+
+    for (auto x = 0; x < bytes; ++x) {
+      for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
+        auto bit = 1 << c;
+        auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
+
+        switch (color_type) {
+          case 0:  // Opaque black (handled by alpha-blending)
+          case 2:  // Opaque white (handled by alpha-blending)
+          case 1:  // Color of screen (transparent)
+            *pixel_data = transparent;
+            break;
+          case 3:  // Inverse of screen
+            *pixel_data = inverted;
+            break;
+        }
+
+        ++pixel_data;
+      }
+      ++and_mask;
+      ++xor_mask;
+    }
+
+    return cursor_img;
   }
 
-  util::buffer_t<std::uint8_t> make_cursor_alpha_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info, monochrome_cursor_stats_t *monochrome_stats = nullptr) {
+  util::buffer_t<std::uint8_t> make_cursor_alpha_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info, bool flatten_monochrome, monochrome_cursor_stats_t *monochrome_stats = nullptr) {
     constexpr std::uint32_t black = 0xFF000000;
     constexpr std::uint32_t white = 0xFFFFFFFF;
     constexpr std::uint32_t transparent = 0;
@@ -323,8 +359,8 @@ namespace platf::dxgi {
                 ++monochrome_stats->white;
               }
               break;
-            case 3:  // Inverse of screen; flatten to visible white for streaming.
-              pixel = white;
+            case 3:  // Inverse of screen.
+              pixel = flatten_monochrome ? white : transparent;
               if (monochrome_stats) {
                 ++monochrome_stats->inverted;
               }
@@ -1228,12 +1264,14 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
+      const bool app_cursor_path = app_streaming;
       monochrome_cursor_stats_t monochrome_stats {};
-      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr);
-      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+      auto *monochrome_stats_p = app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr;
+      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, app_cursor_path, monochrome_stats_p);
+      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info, app_cursor_path);
       DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
       const auto monochrome_visible_pixels = monochrome_stats.black + monochrome_stats.white + monochrome_stats.inverted;
-      const bool using_empty_mono_fallback = shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
+      const bool using_empty_mono_fallback = app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
       if (using_empty_mono_fallback) {
         constexpr LONG fallback_width = 32;
         constexpr LONG fallback_height = 32;
@@ -1252,8 +1290,9 @@ namespace platf::dxgi {
                         << " pitch="sv << shape_info.Pitch
                         << " buffer="sv << frame_info.PointerShapeBufferSize
                         << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " session_cursor_visible="sv << cursor_visible;
-        if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+                        << " session_cursor_visible="sv << cursor_visible
+                        << " cursor_path="sv << (app_cursor_path ? "app"sv : "desktop_stock"sv);
+        if (app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
           BOOST_LOG(info) << "DDUP monochrome cursor flattened for stream visibility: black="sv << monochrome_stats.black
                           << " white="sv << monochrome_stats.white
                           << " inverted_as_white="sv << monochrome_stats.inverted
@@ -1261,6 +1300,8 @@ namespace platf::dxgi {
           if (using_empty_mono_fallback) {
             BOOST_LOG(warning) << "DDUP monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
           }
+        } else if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+          BOOST_LOG(info) << "DDUP desktop cursor using stock monochrome XOR texture path"sv;
         }
         ddup_cursor_shape_logged = true;
       }

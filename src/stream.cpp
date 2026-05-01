@@ -2026,14 +2026,21 @@ namespace stream {
       session->launch_session_id = launch_session.id;
 
       session->config = config;
-      session->config.monitor.output_name = launch_session.output_name;
-      session->config.monitor.cursor_visible = launch_session.show_cursor;
-      if (!launch_session.output_name.empty()) {
-        BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
+
+      session->config.monitor.app_streaming = launch_session.app_streaming;
+      if (launch_session.app_streaming) {
+        session->config.monitor.output_name = launch_session.output_name;
+        session->config.monitor.cursor_visible = launch_session.show_cursor;
+        if (!launch_session.output_name.empty()) {
+          BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
+        }
+        BOOST_LOG(info) << "App-stream session metadata: app_streaming=true output_name=["sv << launch_session.output_name
+                        << "] cursor_compositing="sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
+      } else {
+        session->config.monitor.window_id.clear();
+        session->config.monitor.output_name.clear();
+        BOOST_LOG(info) << "Desktop session using stock monitor capture path: app_streaming=false output_name=[] cursor_compositing=global"sv;
       }
-      BOOST_LOG(info) << "Session metadata: app_streaming="sv << launch_session.app_streaming
-                      << " output_name=["sv << launch_session.output_name
-                      << "] cursor_compositing="sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

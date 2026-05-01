@@ -1109,9 +1109,11 @@ namespace rtsp_stream {
       return;
     }
 
+    config.monitor.app_streaming = session.app_streaming;
+
     // Window capture: resolve target window before starting the session
     auto &running_app = proc::proc.get_running_app();
-    if (running_app.capture_mode == "window" && !running_app.window_match.empty()) {
+    if (session.app_streaming && running_app.capture_mode == "window" && !running_app.window_match.empty()) {
       std::string match_lower = running_app.window_match;
       std::transform(match_lower.begin(), match_lower.end(), match_lower.begin(),
                      [](unsigned char c) { return std::tolower(c); });
