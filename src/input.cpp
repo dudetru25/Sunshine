@@ -9,6 +9,7 @@ extern "C" {
 }
 
 // standard includes
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -40,6 +41,8 @@ namespace input {
   constexpr auto MAX_GAMEPADS = std::min((std::size_t) platf::MAX_GAMEPADS, sizeof(std::int16_t) * 8);
 #define DISABLE_LEFT_BUTTON_DELAY ((thread_pool_util::ThreadPool::task_id_t) 0x01)
 #define ENABLE_LEFT_BUTTON_DELAY nullptr
+  std::atomic_bool relative_mouse_input_logged {false};
+  std::atomic_bool absolute_mouse_input_logged {false};
 
   constexpr auto VKEY_SHIFT = 0x10;
   constexpr auto VKEY_LSHIFT = 0xA0;
@@ -446,6 +449,10 @@ namespace input {
       return;
     }
 
+    if (!relative_mouse_input_logged.exchange(true)) {
+      BOOST_LOG(info) << "Moonlight mouse input mode: relative"sv;
+    }
+
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
     platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
   }
@@ -541,6 +548,10 @@ namespace input {
   void passthrough(std::shared_ptr<input_t> &input, PNV_ABS_MOUSE_MOVE_PACKET packet) {
     if (!config::input.mouse) {
       return;
+    }
+
+    if (!absolute_mouse_input_logged.exchange(true)) {
+      BOOST_LOG(info) << "Moonlight mouse input mode: absolute"sv;
     }
 
     if (input->mouse_left_button_timeout == DISABLE_LEFT_BUTTON_DELAY) {
