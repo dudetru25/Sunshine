@@ -2031,7 +2031,9 @@ namespace stream {
       if (!launch_session.output_name.empty()) {
         BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
       }
-      BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
+      BOOST_LOG(info) << "Session metadata: app_streaming="sv << launch_session.app_streaming
+                      << " output_name=["sv << launch_session.output_name
+                      << "] cursor_compositing="sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

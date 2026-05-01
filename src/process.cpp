@@ -157,6 +157,13 @@ namespace proc {
     _app = *iter;
     launch_session->show_cursor = _app.show_cursor;
     launch_session->app_streaming = _app.app_streaming;
+    BOOST_LOG(info) << "Launch session metadata ["sv << _app.name
+                    << "]: capture_mode=["sv << _app.capture_mode
+                    << "] app_streaming="sv << launch_session->app_streaming
+                    << " output_name=["sv << launch_session->output_name
+                    << "] show_cursor="sv << launch_session->show_cursor
+                    << " client_absolute_mouse_set="sv << _app.client_absolute_mouse_set
+                    << " client_absolute_mouse="sv << _app.client_absolute_mouse;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 

@@ -168,45 +168,6 @@ namespace platf::dxgi {
     }
   }
 
-  void set_ddup_cursor_test_box(cursor_t &cursor) {
-    constexpr auto size = 32;
-
-    cursor.shape_info = {};
-    cursor.shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
-    cursor.shape_info.Width = size;
-    cursor.shape_info.Height = size;
-    cursor.shape_info.Pitch = size * 4;
-    cursor.img_data.assign(size * size * 4, 0x00);
-    cursor.visible = true;
-
-    auto set_pixel = [&](int x, int y, std::uint8_t blue, std::uint8_t green, std::uint8_t red, std::uint8_t alpha) {
-      auto index = (y * size + x) * 4;
-      cursor.img_data[index + 0] = blue;
-      cursor.img_data[index + 1] = green;
-      cursor.img_data[index + 2] = red;
-      cursor.img_data[index + 3] = alpha;
-    };
-
-    for (int y = 0; y < size; ++y) {
-      for (int x = 0; x < size; ++x) {
-        if (x == 0 || y == 0 || x == size - 1 || y == size - 1) {
-          set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
-        }
-      }
-    }
-
-    for (int i = 0; i < 10; ++i) {
-      set_pixel(i, 0, 0x00, 0x00, 0x00, 0xFF);
-      set_pixel(0, i, 0x00, 0x00, 0x00, 0xFF);
-    }
-
-    for (int y = 1; y < 7; ++y) {
-      for (int x = 1; x < 7; ++x) {
-        set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
-      }
-    }
-  }
-
   capture_e display_ddup_ram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     HRESULT status;
     DXGI_OUTDUPL_FRAME_INFO frame_info;
@@ -255,30 +216,22 @@ namespace platf::dxgi {
                         << " session_cursor_visible="sv << cursor_visible;
         ddup_cursor_shape_logged = true;
       }
-      ddup_cursor_test_box_ready = false;
     }
 
     if (frame_info.LastMouseUpdateTime.QuadPart) {
       cursor.x = frame_info.PointerPosition.Position.x;
       cursor.y = frame_info.PointerPosition.Position.y;
-      cursor.visible = true;
+      cursor.visible = frame_info.PointerPosition.Visible;
 
-      if (!ddup_cursor_position_logged) {
-        BOOST_LOG(info) << "DDUP RAM cursor position update: x="sv << cursor.x
+      auto log_count = ++ddup_cursor_position_log_count;
+      if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
+        BOOST_LOG(info) << "DDUP RAM cursor position update #"sv << log_count
+                        << ": x="sv << cursor.x
                         << " y="sv << cursor.y
                         << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " forced_visible_for_test_box="sv << cursor_visible;
+                        << " session_cursor_visible="sv << cursor_visible
+                        << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
         ddup_cursor_position_logged = true;
-      }
-    }
-
-    if (cursor_visible && !ddup_cursor_test_box_ready) {
-      set_ddup_cursor_test_box(cursor);
-      ddup_cursor_test_box_ready = true;
-
-      if (!ddup_cursor_test_box_logged) {
-        BOOST_LOG(info) << "DDUP RAM cursor diagnostic white box active: 32x32 session_cursor_visible="sv << cursor_visible;
-        ddup_cursor_test_box_logged = true;
       }
     }
 

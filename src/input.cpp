@@ -43,6 +43,15 @@ namespace input {
 #define ENABLE_LEFT_BUTTON_DELAY nullptr
   std::atomic_bool relative_mouse_input_logged {false};
   std::atomic_bool absolute_mouse_input_logged {false};
+  std::atomic_bool absolute_mouse_touch_port_logged {false};
+  std::atomic_uint32_t relative_mouse_input_count {0};
+  std::atomic_uint32_t absolute_mouse_input_count {0};
+  std::atomic_uint32_t absolute_mouse_ignored_count {0};
+  std::atomic_uint32_t mouse_button_input_count {0};
+
+  bool should_log_mouse_packet(std::uint32_t count) {
+    return count <= 10 || count % 240 == 0;
+  }
 
   constexpr auto VKEY_SHIFT = 0x10;
   constexpr auto VKEY_LSHIFT = 0xA0;
@@ -453,6 +462,13 @@ namespace input {
       BOOST_LOG(info) << "Moonlight mouse input mode: relative"sv;
     }
 
+    auto count = relative_mouse_input_count.fetch_add(1) + 1;
+    if (should_log_mouse_packet(count)) {
+      BOOST_LOG(info) << "Moonlight relative mouse packet #"sv << count
+                      << ": dx="sv << util::endian::big(packet->deltaX)
+                      << " dy="sv << util::endian::big(packet->deltaY);
+    }
+
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
     platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
   }
@@ -554,6 +570,15 @@ namespace input {
       BOOST_LOG(info) << "Moonlight mouse input mode: absolute"sv;
     }
 
+    auto count = absolute_mouse_input_count.fetch_add(1) + 1;
+    if (should_log_mouse_packet(count)) {
+      BOOST_LOG(info) << "Moonlight absolute mouse packet #"sv << count
+                      << ": x="sv << util::endian::big(packet->x)
+                      << " y="sv << util::endian::big(packet->y)
+                      << " ref="sv << util::endian::big(packet->width)
+                      << 'x' << util::endian::big(packet->height);
+    }
+
     if (input->mouse_left_button_timeout == DISABLE_LEFT_BUTTON_DELAY) {
       input->mouse_left_button_timeout = ENABLE_LEFT_BUTTON_DELAY;
     }
@@ -574,6 +599,13 @@ namespace input {
 
     auto tpcoords = client_to_touchport(input, {x, y}, {width, height});
     if (!tpcoords) {
+      auto ignored_count = absolute_mouse_ignored_count.fetch_add(1) + 1;
+      if (should_log_mouse_packet(ignored_count)) {
+        BOOST_LOG(warning) << "Moonlight absolute mouse packet ignored #"sv << ignored_count
+                           << ": touch port unavailable x="sv << x
+                           << " y="sv << y
+                           << " ref="sv << width << 'x' << height;
+      }
       return;
     }
 
@@ -587,6 +619,17 @@ namespace input {
     } else {
       touch_port_dim_x = touch_port.env_width;
       touch_port_dim_y = touch_port.env_height;
+    }
+
+    if (!absolute_mouse_touch_port_logged.exchange(true)) {
+      BOOST_LOG(info) << "Moonlight absolute mouse touch port: offset="sv << touch_port.offset_x << ',' << touch_port.offset_y
+                      << " dim="sv << touch_port.width << 'x' << touch_port.height
+                      << " logical="sv << touch_port.logical_width << 'x' << touch_port.logical_height
+                      << " env="sv << touch_port.env_width << 'x' << touch_port.env_height
+                      << " env_logical="sv << touch_port.env_logical_width << 'x' << touch_port.env_logical_height
+                      << " client_offset="sv << touch_port.client_offsetX << ',' << touch_port.client_offsetY
+                      << " scalar_inv="sv << touch_port.scalar_inv
+                      << " scalar_tpcoords="sv << touch_port.scalar_tpcoords;
     }
 
     platf::touch_port_t abs_port {
@@ -606,6 +649,14 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
+    auto count = mouse_button_input_count.fetch_add(1) + 1;
+    if (should_log_mouse_packet(count)) {
+      BOOST_LOG(info) << "Moonlight mouse button packet #"sv << count
+                      << ": button="sv << button
+                      << " release="sv << release
+                      << " left_timeout_active="sv << (input->mouse_left_button_timeout != nullptr);
+    }
+
     if (button > 0 && button < mouse_press.size()) {
       if (mouse_press[button] != release) {
         // button state is already what we want

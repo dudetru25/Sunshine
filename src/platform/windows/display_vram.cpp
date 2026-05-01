@@ -1145,40 +1145,6 @@ namespace platf::dxgi {
     return true;
   }
 
-  util::buffer_t<std::uint8_t> make_ddup_cursor_test_box() {
-    constexpr auto size = 32;
-    util::buffer_t<std::uint8_t> cursor_img(size * size * 4);
-
-    auto set_pixel = [&](int x, int y, std::uint8_t blue, std::uint8_t green, std::uint8_t red, std::uint8_t alpha) {
-      auto index = (y * size + x) * 4;
-      cursor_img[index + 0] = blue;
-      cursor_img[index + 1] = green;
-      cursor_img[index + 2] = red;
-      cursor_img[index + 3] = alpha;
-    };
-
-    for (int y = 0; y < size; ++y) {
-      for (int x = 0; x < size; ++x) {
-        if (x == 0 || y == 0 || x == size - 1 || y == size - 1) {
-          set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
-        }
-      }
-    }
-
-    for (int i = 0; i < 10; ++i) {
-      set_pixel(i, 0, 0x00, 0x00, 0x00, 0xFF);
-      set_pixel(0, i, 0x00, 0x00, 0x00, 0xFF);
-    }
-
-    for (int y = 1; y < 7; ++y) {
-      for (int x = 1; x < 7; ++x) {
-        set_pixel(x, y, 0xFF, 0xFF, 0xFF, 0xFF);
-      }
-    }
-
-    return cursor_img;
-  }
-
   capture_e display_ddup_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     HRESULT status;
     DXGI_OUTDUPL_FRAME_INFO frame_info;
@@ -1235,46 +1201,22 @@ namespace platf::dxgi {
           !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
         return capture_e::error;
       }
-      ddup_cursor_test_box_ready = false;
     }
 
     if (frame_info.LastMouseUpdateTime.QuadPart) {
-      cursor_alpha.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, true);
+      cursor_alpha.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
 
-      cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, true);
+      cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
 
-      if (!ddup_cursor_position_logged) {
-        BOOST_LOG(info) << "DDUP cursor position update: x="sv << frame_info.PointerPosition.Position.x
+      auto log_count = ++ddup_cursor_position_log_count;
+      if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
+        BOOST_LOG(info) << "DDUP cursor position update #"sv << log_count
+                        << ": x="sv << frame_info.PointerPosition.Position.x
                         << " y="sv << frame_info.PointerPosition.Position.y
                         << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " forced_visible_for_test_box="sv << cursor_visible;
+                        << " session_cursor_visible="sv << cursor_visible
+                        << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
         ddup_cursor_position_logged = true;
-      }
-    }
-
-    if (cursor_visible && !ddup_cursor_test_box_ready) {
-      DXGI_OUTDUPL_POINTER_SHAPE_INFO test_shape_info {};
-      test_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
-      test_shape_info.Width = 32;
-      test_shape_info.Height = 32;
-      test_shape_info.Pitch = 32 * 4;
-
-      auto test_cursor_img = make_ddup_cursor_test_box();
-      util::buffer_t<std::uint8_t> empty_xor_img {};
-      if (!set_cursor_texture(device.get(), cursor_alpha, std::move(test_cursor_img), test_shape_info) ||
-          !set_cursor_texture(device.get(), cursor_xor, std::move(empty_xor_img), test_shape_info)) {
-        return capture_e::error;
-      }
-
-      if (!cursor_alpha.visible) {
-        cursor_alpha.set_pos(0, 0, width, height, display_rotation, true);
-        cursor_xor.set_pos(0, 0, width, height, display_rotation, false);
-      }
-
-      ddup_cursor_test_box_ready = true;
-      if (!ddup_cursor_test_box_logged) {
-        BOOST_LOG(info) << "DDUP cursor diagnostic white box active: 32x32 session_cursor_visible="sv << cursor_visible;
-        ddup_cursor_test_box_logged = true;
       }
     }
 

@@ -833,6 +833,17 @@ namespace nvhttp {
         app.put("AppClientAbsoluteMouse"s, proc.client_absolute_mouse ? 1 : 0);
       }
 
+      if (proc.name == "Desktop"sv || proc.app_streaming) {
+        BOOST_LOG(info) << "App list metadata ["sv << proc.name
+                        << "]: capture_mode=["sv << proc.capture_mode
+                        << "] app_streaming="sv << proc.app_streaming
+                        << " emits_client_hints="sv << proc.app_streaming
+                        << " stream_resolution=["sv << (proc.app_streaming ? proc.stream_resolution : "")
+                        << "] client_display_mode=["sv << (proc.app_streaming ? proc.client_display_mode : "")
+                        << "] client_absolute_mouse_set="sv << (proc.app_streaming && proc.client_absolute_mouse_set)
+                        << " client_absolute_mouse="sv << (proc.app_streaming && proc.client_absolute_mouse);
+      }
+
       apps.push_back(std::make_pair("App", std::move(app)));
     }
   }
@@ -997,6 +1008,11 @@ namespace nvhttp {
     launch_session->output_name = running_app.stream_output_name;
     launch_session->show_cursor = running_app.show_cursor;
     launch_session->app_streaming = running_app.app_streaming;
+    BOOST_LOG(info) << "Resume session metadata ["sv << running_app.name
+                    << "]: capture_mode=["sv << running_app.capture_mode
+                    << "] app_streaming="sv << launch_session->app_streaming
+                    << " output_name=["sv << launch_session->output_name
+                    << "] show_cursor="sv << launch_session->show_cursor;
     if (!launch_session->output_name.empty()) {
       BOOST_LOG(info) << "Resuming app with capture output override: ["sv << launch_session->output_name << ']';
     }

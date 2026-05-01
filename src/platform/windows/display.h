@@ -314,10 +314,9 @@ namespace platf::dxgi {
 
     duplication_t dup;
     cursor_t cursor;
-    bool ddup_cursor_test_box_ready = false;
-    bool ddup_cursor_test_box_logged = false;
     bool ddup_cursor_shape_logged = false;
     bool ddup_cursor_position_logged = false;
+    std::uint32_t ddup_cursor_position_log_count = 0;
   };
 
   /**
@@ -341,10 +340,9 @@ namespace platf::dxgi {
 
     gpu_cursor_t cursor_alpha;
     gpu_cursor_t cursor_xor;
-    bool ddup_cursor_test_box_ready = false;
-    bool ddup_cursor_test_box_logged = false;
     bool ddup_cursor_shape_logged = false;
     bool ddup_cursor_position_logged = false;
+    std::uint32_t ddup_cursor_position_log_count = 0;
 
     texture2d_t old_surface_delayed_destruction;
     std::chrono::steady_clock::time_point old_surface_timestamp;
