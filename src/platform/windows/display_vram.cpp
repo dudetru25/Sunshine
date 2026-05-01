@@ -1488,8 +1488,18 @@ namespace platf::dxgi {
           static_cast<void>(make_cursor_alpha_image(img_data, shape_info, true, desktop_monochrome_stats_p));
         }
 
-        auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info);
-        auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+        DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
+        const auto desktop_monochrome_visible_pixels = desktop_monochrome_stats.black + desktop_monochrome_stats.white + desktop_monochrome_stats.inverted;
+        const bool using_empty_mono_fallback = desktop_monochrome_stats_p && desktop_monochrome_visible_pixels == 0 && frame_info.PointerPosition.Visible && cursor_visible;
+        auto alpha_cursor_img = using_empty_mono_fallback ? make_builtin_arrow_cursor_image(32, 32) : make_cursor_alpha_image(img_data, shape_info);
+        auto xor_cursor_img = using_empty_mono_fallback ? util::buffer_t<std::uint8_t> {} : make_cursor_xor_image(img_data, shape_info);
+
+        if (using_empty_mono_fallback) {
+          texture_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+          texture_shape_info.Width = 32;
+          texture_shape_info.Height = 32;
+          texture_shape_info.Pitch = 32 * 4;
+        }
 
         if (!ddup_cursor_shape_logged) {
           BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
@@ -1504,12 +1514,15 @@ namespace platf::dxgi {
                             << " white="sv << desktop_monochrome_stats.white
                             << " inverted="sv << desktop_monochrome_stats.inverted
                             << " transparent="sv << desktop_monochrome_stats.transparent;
+            if (using_empty_mono_fallback) {
+              BOOST_LOG(warning) << "DDUP desktop monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
+            }
           }
           ddup_cursor_shape_logged = true;
         }
 
-        if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
-            !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
+        if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), texture_shape_info) ||
+            !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), texture_shape_info)) {
           return capture_e::error;
         }
       }
