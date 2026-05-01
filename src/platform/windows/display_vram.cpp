@@ -217,8 +217,6 @@ namespace platf::dxgi {
   };
 
   util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
-    constexpr std::uint32_t transparent = 0;
-
     switch (shape_info.Type) {
       case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
         // This type doesn't require any XOR-blending
@@ -233,7 +231,7 @@ namespace platf::dxgi {
             } else if (alpha == 0x00) {
               // Pixels with 0x00 alpha will be blended by make_cursor_alpha_image().
               // We make them transparent for the XOR-blended cursor image.
-              pixel = transparent;
+              pixel = 0;
             } else {
               // Other alpha values are illegal in masked color cursors
               BOOST_LOG(warning) << "Illegal alpha value in masked color cursor: " << alpha;
@@ -338,6 +336,58 @@ namespace platf::dxgi {
               }
               break;
           }
+        }
+      }
+    }
+
+    return cursor_img;
+  }
+
+  util::buffer_t<std::uint8_t> make_builtin_arrow_cursor_image(LONG cursor_width, LONG cursor_height) {
+    util::buffer_t<std::uint8_t> cursor_img(cursor_width * cursor_height * 4, 0);
+
+    auto put_pixel = [&](LONG x, LONG y, std::uint8_t value) {
+      if (x < 0 || y < 0 || x >= cursor_width || y >= cursor_height) {
+        return;
+      }
+
+      const auto i = (y * cursor_width + x) * 4;
+      cursor_img[i] = value;
+      cursor_img[i + 1] = value;
+      cursor_img[i + 2] = value;
+      cursor_img[i + 3] = 0xFF;
+    };
+
+    constexpr const char *arrow[] {
+      "#",
+      "##",
+      "#W#",
+      "#WW#",
+      "#WWW#",
+      "#WWWW#",
+      "#WWWWW#",
+      "#WWWWWW#",
+      "#WWWWWWW#",
+      "#WWWWWWWW#",
+      "#WWWWWWWWW#",
+      "#WWWWWWWWWW#",
+      "#WWWWWWWWWWW#",
+      "#WWWW#######",
+      "#WWW#",
+      "#WW#",
+      "#W#",
+      "##",
+      "#",
+    };
+
+    constexpr auto row_count = sizeof(arrow) / sizeof(arrow[0]);
+    for (LONG y = 0; y < cursor_height && y < static_cast<LONG>(row_count); ++y) {
+      const auto row = arrow[y];
+      for (LONG x = 0; row[x] != '\0' && x < cursor_width; ++x) {
+        if (row[x] == '#') {
+          put_pixel(x, y, 0x00);
+        } else if (row[x] == 'W') {
+          put_pixel(x, y, 0xFF);
         }
       }
     }
@@ -1181,6 +1231,20 @@ namespace platf::dxgi {
       monochrome_cursor_stats_t monochrome_stats {};
       auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr);
       auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+      DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
+      const auto monochrome_visible_pixels = monochrome_stats.black + monochrome_stats.white + monochrome_stats.inverted;
+      const bool using_empty_mono_fallback = shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
+      if (using_empty_mono_fallback) {
+        constexpr LONG fallback_width = 32;
+        constexpr LONG fallback_height = 32;
+
+        alpha_cursor_img = make_builtin_arrow_cursor_image(fallback_width, fallback_height);
+        xor_cursor_img = {};
+        texture_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+        texture_shape_info.Width = fallback_width;
+        texture_shape_info.Height = fallback_height;
+        texture_shape_info.Pitch = fallback_width * 4;
+      }
 
       if (!ddup_cursor_shape_logged) {
         BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
@@ -1194,12 +1258,15 @@ namespace platf::dxgi {
                           << " white="sv << monochrome_stats.white
                           << " inverted_as_white="sv << monochrome_stats.inverted
                           << " transparent="sv << monochrome_stats.transparent;
+          if (using_empty_mono_fallback) {
+            BOOST_LOG(warning) << "DDUP monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
+          }
         }
         ddup_cursor_shape_logged = true;
       }
 
-      if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
-          !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
+      if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), texture_shape_info) ||
+          !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), texture_shape_info)) {
         return capture_e::error;
       }
     }
