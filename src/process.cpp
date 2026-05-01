@@ -156,6 +156,7 @@ namespace proc {
     _app_id = app_id;
     _app = *iter;
     launch_session->show_cursor = _app.show_cursor;
+    launch_session->app_streaming = _app.app_streaming;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -281,6 +282,7 @@ namespace proc {
     return -1;
 #else
     launch_session->show_cursor = app.show_cursor;
+    launch_session->app_streaming = app.app_streaming;
 
     if (app.cmd.empty() && !app.attach_existing) {
       BOOST_LOG(error) << "VDD app streaming requires a launch command unless attach-existing is enabled"sv;
@@ -975,14 +977,15 @@ namespace proc {
         ctx.capture_mode = capture_mode.value_or("");
         ctx.window_match = window_match.value_or("");
         ctx.window_resolution = window_resolution.value_or("");
-        ctx.stream_resolution = stream_resolution.value_or("");
-        ctx.client_display_mode = client_display_mode.value_or("");
-        ctx.auto_spawn_from = auto_spawn_from.value_or("");
-        ctx.client_app_window_set = client_app_window.has_value();
-        ctx.client_app_window = client_app_window.value_or(false);
-        ctx.client_absolute_mouse_set = client_absolute_mouse.has_value();
-        ctx.client_absolute_mouse = client_absolute_mouse.value_or(false);
-        ctx.terminate_on_disconnect = terminate_on_disconnect.value_or(ctx.capture_mode == "window" || ctx.capture_mode == "vdd");
+        ctx.app_streaming = ctx.capture_mode == "window" || ctx.capture_mode == "vdd";
+        ctx.stream_resolution = ctx.app_streaming ? stream_resolution.value_or("") : "";
+        ctx.client_display_mode = ctx.app_streaming ? client_display_mode.value_or("") : "";
+        ctx.auto_spawn_from = ctx.app_streaming ? auto_spawn_from.value_or("") : "";
+        ctx.client_app_window_set = ctx.app_streaming && client_app_window.has_value();
+        ctx.client_app_window = ctx.app_streaming && client_app_window.value_or(false);
+        ctx.client_absolute_mouse_set = ctx.app_streaming && client_absolute_mouse.has_value();
+        ctx.client_absolute_mouse = ctx.app_streaming && client_absolute_mouse.value_or(false);
+        ctx.terminate_on_disconnect = terminate_on_disconnect.value_or(ctx.app_streaming);
         ctx.window_borderless = window_borderless.value_or(ctx.capture_mode == "vdd");
         ctx.attach_existing = attach_existing.value_or(false);
         ctx.window_follow = window_follow.value_or(ctx.capture_mode == "vdd");

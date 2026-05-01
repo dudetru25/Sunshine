@@ -38,6 +38,7 @@ namespace rtsp_stream {
     bool enable_hdr;
     bool enable_sops;
     bool show_cursor;
+    bool app_streaming;
     std::string output_name;
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;

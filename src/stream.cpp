@@ -2032,7 +2032,7 @@ namespace stream {
         BOOST_LOG(info) << "Session capture output override: ["sv << launch_session.output_name << ']';
       }
       BOOST_LOG(info) << "Session cursor compositing: "sv << (launch_session.show_cursor ? "enabled"sv : "disabled"sv);
-      if (launch_session.output_name.empty() && launch_session.show_cursor) {
+      if (!launch_session.app_streaming && launch_session.output_name.empty() && launch_session.show_cursor) {
         platf::ensure_cursor_on_display(config::video.output_name);
       }
 

@@ -72,6 +72,7 @@ namespace proc {
     std::string stream_output_name;
     std::string client_display_mode;
     std::string auto_spawn_from;
+    bool app_streaming;
     bool client_app_window_set;
     bool client_app_window;
     bool client_absolute_mouse_set;
