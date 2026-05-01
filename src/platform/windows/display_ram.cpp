@@ -207,7 +207,7 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
-      if (!ddup_cursor_shape_logged) {
+      if (app_streaming && !ddup_cursor_shape_logged) {
         BOOST_LOG(info) << "DDUP RAM cursor shape fetched: type="sv << cursor.shape_info.Type
                         << " size="sv << cursor.shape_info.Width << 'x' << cursor.shape_info.Height
                         << " pitch="sv << cursor.shape_info.Pitch
@@ -223,15 +223,17 @@ namespace platf::dxgi {
       cursor.y = frame_info.PointerPosition.Position.y;
       cursor.visible = frame_info.PointerPosition.Visible;
 
-      auto log_count = ++ddup_cursor_position_log_count;
-      if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
-        BOOST_LOG(info) << "DDUP RAM cursor position update #"sv << log_count
-                        << ": x="sv << cursor.x
-                        << " y="sv << cursor.y
-                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " session_cursor_visible="sv << cursor_visible
-                        << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
-        ddup_cursor_position_logged = true;
+      if (app_streaming) {
+        auto log_count = ++ddup_cursor_position_log_count;
+        if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
+          BOOST_LOG(info) << "DDUP RAM cursor position update #"sv << log_count
+                          << ": x="sv << cursor.x
+                          << " y="sv << cursor.y
+                          << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                          << " session_cursor_visible="sv << cursor_visible
+                          << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
+          ddup_cursor_position_logged = true;
+        }
       }
     }
 

@@ -234,7 +234,7 @@ namespace platf::dxgi {
             } else if (alpha == 0x00) {
               // Pixels with 0x00 alpha will be blended by make_cursor_alpha_image().
               // We make them transparent for the XOR-blended cursor image.
-              pixel = 0;
+              pixel = transparent;
             } else {
               // Other alpha values are illegal in masked color cursors
               BOOST_LOG(warning) << "Illegal alpha value in masked color cursor: " << alpha;
@@ -1264,14 +1264,13 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
-      const bool app_cursor_path = app_streaming;
       monochrome_cursor_stats_t monochrome_stats {};
-      auto *monochrome_stats_p = app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr;
-      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, app_cursor_path, monochrome_stats_p);
-      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info, app_cursor_path);
+      auto *monochrome_stats_p = app_streaming && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr;
+      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, app_streaming, monochrome_stats_p);
+      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info, app_streaming);
       DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
       const auto monochrome_visible_pixels = monochrome_stats.black + monochrome_stats.white + monochrome_stats.inverted;
-      const bool using_empty_mono_fallback = app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
+      const bool using_empty_mono_fallback = app_streaming && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
       if (using_empty_mono_fallback) {
         constexpr LONG fallback_width = 32;
         constexpr LONG fallback_height = 32;
@@ -1284,15 +1283,15 @@ namespace platf::dxgi {
         texture_shape_info.Pitch = fallback_width * 4;
       }
 
-      if (!ddup_cursor_shape_logged) {
+      if (app_streaming && !ddup_cursor_shape_logged) {
         BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
                         << " size="sv << shape_info.Width << 'x' << shape_info.Height
                         << " pitch="sv << shape_info.Pitch
                         << " buffer="sv << frame_info.PointerShapeBufferSize
                         << " pointer_visible="sv << frame_info.PointerPosition.Visible
                         << " session_cursor_visible="sv << cursor_visible
-                        << " cursor_path="sv << (app_cursor_path ? "app"sv : "desktop_stock"sv);
-        if (app_cursor_path && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+                        << " cursor_path=app"sv;
+        if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
           BOOST_LOG(info) << "DDUP monochrome cursor flattened for stream visibility: black="sv << monochrome_stats.black
                           << " white="sv << monochrome_stats.white
                           << " inverted_as_white="sv << monochrome_stats.inverted
@@ -1300,8 +1299,6 @@ namespace platf::dxgi {
           if (using_empty_mono_fallback) {
             BOOST_LOG(warning) << "DDUP monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
           }
-        } else if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
-          BOOST_LOG(info) << "DDUP desktop cursor using stock monochrome XOR texture path"sv;
         }
         ddup_cursor_shape_logged = true;
       }
@@ -1317,15 +1314,17 @@ namespace platf::dxgi {
 
       cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
 
-      auto log_count = ++ddup_cursor_position_log_count;
-      if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
-        BOOST_LOG(info) << "DDUP cursor position update #"sv << log_count
-                        << ": x="sv << frame_info.PointerPosition.Position.x
-                        << " y="sv << frame_info.PointerPosition.Position.y
-                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " session_cursor_visible="sv << cursor_visible
-                        << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
-        ddup_cursor_position_logged = true;
+      if (app_streaming) {
+        auto log_count = ++ddup_cursor_position_log_count;
+        if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
+          BOOST_LOG(info) << "DDUP cursor position update #"sv << log_count
+                          << ": x="sv << frame_info.PointerPosition.Position.x
+                          << " y="sv << frame_info.PointerPosition.Position.y
+                          << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                          << " session_cursor_visible="sv << cursor_visible
+                          << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
+          ddup_cursor_position_logged = true;
+        }
       }
     }
 

@@ -1092,7 +1092,9 @@ namespace stream {
           }
 
           if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING) {
-            proc::proc.terminate_session(session->launch_session_id);
+            if (session->config.monitor.app_streaming) {
+              proc::proc.terminate_session(session->launch_session_id);
+            }
             pos = server->_sessions->erase(pos);
 
             if (session->control.peer) {
@@ -1136,7 +1138,7 @@ namespace stream {
       // App-streaming modes can be configured to terminate when all sessions disconnect.
       if (proc::proc.running() > 0 && server->_sessions->empty() && !has_session_awaiting_peer) {
         auto &app = proc::proc.get_running_app();
-        if (app.terminate_on_disconnect) {
+        if (app.app_streaming && app.terminate_on_disconnect) {
           BOOST_LOG(info) << "Streaming app: terminating on disconnect"sv;
           proc::proc.terminate();
         }

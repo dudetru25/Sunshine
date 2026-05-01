@@ -833,7 +833,7 @@ namespace nvhttp {
         app.put("AppClientAbsoluteMouse"s, proc.client_absolute_mouse ? 1 : 0);
       }
 
-      if (proc.name == "Desktop"sv || proc.app_streaming) {
+      if (proc.app_streaming) {
         BOOST_LOG(info) << "App list metadata ["sv << proc.name
                         << "]: capture_mode=["sv << proc.capture_mode
                         << "] app_streaming="sv << proc.app_streaming
@@ -1005,9 +1005,9 @@ namespace nvhttp {
     }
     const auto launch_session = make_launch_session(host_audio, args);
     auto &running_app = proc::proc.get_running_app();
-    launch_session->output_name = running_app.stream_output_name;
-    launch_session->show_cursor = running_app.show_cursor;
     launch_session->app_streaming = running_app.app_streaming;
+    launch_session->output_name = running_app.app_streaming ? running_app.stream_output_name : "";
+    launch_session->show_cursor = running_app.app_streaming ? running_app.show_cursor : config::video.show_cursor;
     BOOST_LOG(info) << "Resume session metadata ["sv << running_app.name
                     << "]: capture_mode=["sv << running_app.capture_mode
                     << "] app_streaming="sv << launch_session->app_streaming
