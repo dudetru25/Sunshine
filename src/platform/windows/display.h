@@ -337,11 +337,6 @@ namespace platf::dxgi {
 
     gpu_cursor_t cursor_alpha;
     gpu_cursor_t cursor_xor;
-    HCURSOR win32_cursor_handle {};
-    LONG win32_cursor_width {};
-    LONG win32_cursor_height {};
-    bool win32_cursor_alpha_visible {};
-    bool win32_cursor_xor_visible {};
 
     texture2d_t old_surface_delayed_destruction;
     std::chrono::steady_clock::time_point old_surface_timestamp;
