@@ -3,6 +3,7 @@
  * @brief Definitions for handling video ram.
  */
 // standard includes
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -1146,7 +1147,139 @@ namespace platf::dxgi {
     return true;
   }
 
-  bool update_cursor_from_win32(device_t::pointer device, output_t::pointer output, gpu_cursor_t &cursor_alpha, gpu_cursor_t &cursor_xor, LONG display_width, LONG display_height, DXGI_MODE_ROTATION display_rotation) {
+  struct win32_cursor_texture_t {
+    util::buffer_t<std::uint8_t> alpha_img;
+    util::buffer_t<std::uint8_t> xor_img;
+    bool alpha_visible {};
+    bool xor_visible {};
+  };
+
+  bool draw_cursor_on_background(HCURSOR cursor_handle, LONG cursor_width, LONG cursor_height, std::uint32_t background, util::buffer_t<std::uint8_t> &cursor_img) {
+    cursor_img = util::buffer_t<std::uint8_t>(cursor_width * cursor_height * 4);
+
+    BITMAPINFO bitmap_info {};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = cursor_width;
+    bitmap_info.bmiHeader.biHeight = -cursor_height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    void *dib_pixels {};
+    auto screen_dc = GetDC(nullptr);
+    if (!screen_dc) {
+      return false;
+    }
+    auto release_screen_dc = util::fail_guard([&]() {
+      ReleaseDC(nullptr, screen_dc);
+    });
+
+    auto memory_dc = CreateCompatibleDC(screen_dc);
+    if (!memory_dc) {
+      return false;
+    }
+    auto cleanup_memory_dc = util::fail_guard([&]() {
+      DeleteDC(memory_dc);
+    });
+
+    auto dib = CreateDIBSection(memory_dc, &bitmap_info, DIB_RGB_COLORS, &dib_pixels, nullptr, 0);
+    if (!dib || !dib_pixels) {
+      return false;
+    }
+    auto cleanup_dib = util::fail_guard([&]() {
+      DeleteObject(dib);
+    });
+
+    auto old_bitmap = SelectObject(memory_dc, dib);
+    auto restore_bitmap = util::fail_guard([&]() {
+      SelectObject(memory_dc, old_bitmap);
+    });
+
+    std::fill_n(static_cast<std::uint32_t *>(dib_pixels), cursor_width * cursor_height, background);
+    if (!DrawIconEx(memory_dc, 0, 0, cursor_handle, cursor_width, cursor_height, 0, nullptr, DI_NORMAL)) {
+      return false;
+    }
+
+    std::memcpy(std::begin(cursor_img), dib_pixels, cursor_img.size());
+    return true;
+  }
+
+  std::uint8_t unpremultiply_cursor_channel(std::uint8_t channel, std::uint8_t alpha) {
+    if (alpha == 0) {
+      return 0;
+    }
+
+    auto value = (static_cast<int>(channel) * 255 + alpha / 2) / alpha;
+    return static_cast<std::uint8_t>(std::min(value, 255));
+  }
+
+  bool make_win32_cursor_texture(HCURSOR cursor_handle, LONG cursor_width, LONG cursor_height, win32_cursor_texture_t &cursor_texture) {
+    util::buffer_t<std::uint8_t> black_img;
+    util::buffer_t<std::uint8_t> white_img;
+    if (!draw_cursor_on_background(cursor_handle, cursor_width, cursor_height, 0x00000000, black_img) ||
+        !draw_cursor_on_background(cursor_handle, cursor_width, cursor_height, 0x00FFFFFF, white_img)) {
+      return false;
+    }
+
+    cursor_texture.alpha_img = util::buffer_t<std::uint8_t>(cursor_width * cursor_height * 4, 0);
+    cursor_texture.xor_img = util::buffer_t<std::uint8_t>(cursor_width * cursor_height * 4, 0);
+
+    for (std::size_t i = 0; i + 3 < black_img.size(); i += 4) {
+      auto black_b = black_img[i];
+      auto black_g = black_img[i + 1];
+      auto black_r = black_img[i + 2];
+      auto white_b = white_img[i];
+      auto white_g = white_img[i + 1];
+      auto white_r = white_img[i + 2];
+
+      const bool transparent = black_b == 0 && black_g == 0 && black_r == 0 &&
+                               white_b == 0xFF && white_g == 0xFF && white_r == 0xFF;
+      if (transparent) {
+        continue;
+      }
+
+      const bool inverted = black_b == 0xFF && black_g == 0xFF && black_r == 0xFF &&
+                            white_b == 0 && white_g == 0 && white_r == 0;
+      if (inverted) {
+        cursor_texture.xor_img[i] = 0xFF;
+        cursor_texture.xor_img[i + 1] = 0xFF;
+        cursor_texture.xor_img[i + 2] = 0xFF;
+        cursor_texture.xor_img[i + 3] = 0xFF;
+        cursor_texture.xor_visible = true;
+        continue;
+      }
+
+      auto delta_b = static_cast<int>(white_b) - static_cast<int>(black_b);
+      auto delta_g = static_cast<int>(white_g) - static_cast<int>(black_g);
+      auto delta_r = static_cast<int>(white_r) - static_cast<int>(black_r);
+      if (delta_b < 0 || delta_g < 0 || delta_r < 0) {
+        cursor_texture.alpha_img[i] = black_b;
+        cursor_texture.alpha_img[i + 1] = black_g;
+        cursor_texture.alpha_img[i + 2] = black_r;
+        cursor_texture.alpha_img[i + 3] = 0xFF;
+        cursor_texture.alpha_visible = true;
+        continue;
+      }
+
+      auto alpha = static_cast<std::uint8_t>(255 - std::min(std::max({delta_b, delta_g, delta_r}), 255));
+      if (alpha == 0) {
+        continue;
+      }
+
+      cursor_texture.alpha_img[i] = unpremultiply_cursor_channel(black_b, alpha);
+      cursor_texture.alpha_img[i + 1] = unpremultiply_cursor_channel(black_g, alpha);
+      cursor_texture.alpha_img[i + 2] = unpremultiply_cursor_channel(black_r, alpha);
+      cursor_texture.alpha_img[i + 3] = alpha;
+      cursor_texture.alpha_visible = true;
+    }
+
+    if (!cursor_texture.xor_visible) {
+      cursor_texture.xor_img = util::buffer_t<std::uint8_t>();
+    }
+    return true;
+  }
+
+  bool update_cursor_from_win32(device_t::pointer device, output_t::pointer output, gpu_cursor_t &cursor_alpha, gpu_cursor_t &cursor_xor, HCURSOR &last_cursor_handle, bool &alpha_visible, bool &xor_visible, LONG display_width, LONG display_height, DXGI_MODE_ROTATION display_rotation) {
     CURSORINFO cursor_info {};
     cursor_info.cbSize = sizeof(cursor_info);
     if (!GetCursorInfo(&cursor_info) || cursor_info.hCursor == nullptr) {
@@ -1197,82 +1330,31 @@ namespace platf::dxgi {
       return true;
     }
 
-    util::buffer_t<std::uint8_t> cursor_img(cursor_width * cursor_height * 4);
-
-    BITMAPINFO bitmap_info {};
-    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmap_info.bmiHeader.biWidth = cursor_width;
-    bitmap_info.bmiHeader.biHeight = -cursor_height;
-    bitmap_info.bmiHeader.biPlanes = 1;
-    bitmap_info.bmiHeader.biBitCount = 32;
-    bitmap_info.bmiHeader.biCompression = BI_RGB;
-
-    void *dib_pixels {};
-    auto screen_dc = GetDC(nullptr);
-    if (!screen_dc) {
-      return false;
-    }
-    auto release_screen_dc = util::fail_guard([&]() {
-      ReleaseDC(nullptr, screen_dc);
-    });
-
-    auto memory_dc = CreateCompatibleDC(screen_dc);
-    if (!memory_dc) {
-      return false;
-    }
-    auto cleanup_memory_dc = util::fail_guard([&]() {
-      DeleteDC(memory_dc);
-    });
-
-    auto dib = CreateDIBSection(memory_dc, &bitmap_info, DIB_RGB_COLORS, &dib_pixels, nullptr, 0);
-    if (!dib || !dib_pixels) {
-      return false;
-    }
-    auto cleanup_dib = util::fail_guard([&]() {
-      DeleteObject(dib);
-    });
-
-    auto old_bitmap = SelectObject(memory_dc, dib);
-    auto restore_bitmap = util::fail_guard([&]() {
-      SelectObject(memory_dc, old_bitmap);
-    });
-
-    std::memset(dib_pixels, 0, cursor_img.size());
-    if (!DrawIconEx(memory_dc, 0, 0, cursor_info.hCursor, cursor_width, cursor_height, 0, nullptr, DI_NORMAL)) {
-      return false;
-    }
-
-    std::memcpy(std::begin(cursor_img), dib_pixels, cursor_img.size());
-
-    bool has_alpha = false;
-    bool has_visible_pixel = false;
-    for (std::size_t i = 0; i + 3 < cursor_img.size(); i += 4) {
-      has_alpha = has_alpha || cursor_img[i + 3] != 0;
-      has_visible_pixel = has_visible_pixel || cursor_img[i] != 0 || cursor_img[i + 1] != 0 || cursor_img[i + 2] != 0;
-    }
-
-    if (!has_alpha && has_visible_pixel) {
-      for (std::size_t i = 0; i + 3 < cursor_img.size(); i += 4) {
-        if (cursor_img[i] != 0 || cursor_img[i + 1] != 0 || cursor_img[i + 2] != 0) {
-          cursor_img[i + 3] = 0xFF;
-        }
+    if (cursor_info.hCursor != last_cursor_handle || !cursor_alpha.texture.get()) {
+      win32_cursor_texture_t cursor_texture;
+      if (!make_win32_cursor_texture(cursor_info.hCursor, cursor_width, cursor_height, cursor_texture)) {
+        return false;
       }
+
+      DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info {};
+      shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+      shape_info.Width = cursor_width;
+      shape_info.Height = cursor_height;
+      shape_info.Pitch = cursor_width * 4;
+
+      if (!set_cursor_texture(device, cursor_alpha, std::move(cursor_texture.alpha_img), shape_info) ||
+          !set_cursor_texture(device, cursor_xor, std::move(cursor_texture.xor_img), shape_info)) {
+        return false;
+      }
+
+      last_cursor_handle = cursor_info.hCursor;
+      alpha_visible = cursor_texture.alpha_visible;
+      xor_visible = cursor_texture.xor_visible;
+      BOOST_LOG(debug) << "Refreshed DDUP cursor from Win32 cursor state"sv;
     }
 
-    DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info {};
-    shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
-    shape_info.Width = cursor_width;
-    shape_info.Height = cursor_height;
-    shape_info.Pitch = cursor_width * 4;
-
-    util::buffer_t<std::uint8_t> empty_xor;
-    if (!set_cursor_texture(device, cursor_alpha, std::move(cursor_img), shape_info) ||
-        !set_cursor_texture(device, cursor_xor, std::move(empty_xor), shape_info)) {
-      return false;
-    }
-
-    cursor_alpha.set_pos(cursor_left, cursor_top, display_width, display_height, display_rotation, true);
-    cursor_xor.set_pos(cursor_left, cursor_top, display_width, display_height, display_rotation, false);
+    cursor_alpha.set_pos(cursor_left, cursor_top, display_width, display_height, display_rotation, alpha_visible);
+    cursor_xor.set_pos(cursor_left, cursor_top, display_width, display_height, display_rotation, xor_visible);
     return true;
   }
 
@@ -1330,10 +1412,8 @@ namespace platf::dxgi {
       cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
     }
 
-    if (cursor_visible && (!cursor_alpha.texture.get() || (!cursor_alpha.visible && !cursor_xor.visible))) {
-      if (update_cursor_from_win32(device.get(), output.get(), cursor_alpha, cursor_xor, width, height, display_rotation)) {
-        BOOST_LOG(debug) << "Seeded DDUP cursor from Win32 cursor state"sv;
-      }
+    if (cursor_visible) {
+      update_cursor_from_win32(device.get(), output.get(), cursor_alpha, cursor_xor, win32_cursor_handle, win32_cursor_alpha_visible, win32_cursor_xor_visible, width, height, display_rotation);
     }
 
     const bool blend_mouse_cursor_flag = (cursor_alpha.visible || cursor_xor.visible) && cursor_visible;
