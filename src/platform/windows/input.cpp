@@ -8,7 +8,10 @@
 #include <Windows.h>
 
 // standard includes
+#include <atomic>
 #include <cmath>
+#include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -27,6 +30,8 @@ namespace platf {
   using namespace std::literals;
 
   thread_local HDESK _lastKnownInputDesktop = nullptr;
+  std::atomic_uint64_t send_input_call_count {};
+  std::atomic_uint64_t send_input_failure_count {};
 
   constexpr touch_port_t target_touch_port {
     0,
@@ -34,6 +39,63 @@ namespace platf {
     65535,
     65535
   };
+
+  bool should_log_send_input(std::uint64_t count, const INPUT &i) {
+    if (count <= 20 || count % 120 == 0) {
+      return true;
+    }
+
+    if (i.type == INPUT_MOUSE) {
+      constexpr DWORD movement_flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+      return (i.mi.dwFlags & ~movement_flags) != 0 && count % 40 == 0;
+    }
+
+    return i.type == INPUT_KEYBOARD && count % 40 == 0;
+  }
+
+  void log_send_input_result(const INPUT &i, std::uint64_t count, const char *status, DWORD error_code = ERROR_SUCCESS) {
+    HWND foreground_window = GetForegroundWindow();
+    DWORD foreground_pid = 0;
+    if (foreground_window) {
+      GetWindowThreadProcessId(foreground_window, &foreground_pid);
+    }
+
+    POINT cursor {};
+    auto got_cursor = GetCursorPos(&cursor);
+
+    if (i.type == INPUT_MOUSE) {
+      BOOST_LOG(info) << "Windows SendInput "sv << status
+                      << " #"sv << count
+                      << ": type=mouse flags="sv << i.mi.dwFlags
+                      << " dx="sv << i.mi.dx
+                      << " dy="sv << i.mi.dy
+                      << " mouseData="sv << i.mi.mouseData
+                      << " error="sv << error_code
+                      << " foreground_hwnd=0x"sv << std::hex << reinterpret_cast<std::uintptr_t>(foreground_window) << std::dec
+                      << " foreground_pid="sv << foreground_pid
+                      << " cursor="sv << (got_cursor ? std::to_string(cursor.x) + "x" + std::to_string(cursor.y) : "unavailable"s);
+      return;
+    }
+
+    if (i.type == INPUT_KEYBOARD) {
+      BOOST_LOG(info) << "Windows SendInput "sv << status
+                      << " #"sv << count
+                      << ": type=keyboard flags="sv << i.ki.dwFlags
+                      << " vk="sv << i.ki.wVk
+                      << " scan="sv << i.ki.wScan
+                      << " error="sv << error_code
+                      << " foreground_hwnd=0x"sv << std::hex << reinterpret_cast<std::uintptr_t>(foreground_window) << std::dec
+                      << " foreground_pid="sv << foreground_pid;
+      return;
+    }
+
+    BOOST_LOG(info) << "Windows SendInput "sv << status
+                    << " #"sv << count
+                    << ": type="sv << i.type
+                    << " error="sv << error_code
+                    << " foreground_hwnd=0x"sv << std::hex << reinterpret_cast<std::uintptr_t>(foreground_window) << std::dec
+                    << " foreground_pid="sv << foreground_pid;
+  }
 
   using client_t = util::safe_ptr<_VIGEM_CLIENT_T, vigem_free>;
   using target_t = util::safe_ptr<_VIGEM_TARGET_T, vigem_target_free>;
@@ -466,16 +528,34 @@ namespace platf {
    * @param i The `INPUT` struct to send.
    */
   void send_input(INPUT &i) {
+    const auto count = ++send_input_call_count;
+    bool retried_after_desktop_sync = false;
+
   retry:
+    SetLastError(ERROR_SUCCESS);
     auto send = SendInput(1, &i, sizeof(INPUT));
-    if (send != 1) {
-      auto hDesk = syncThreadDesktop();
-      if (_lastKnownInputDesktop != hDesk) {
-        _lastKnownInputDesktop = hDesk;
-        goto retry;
+    if (send == 1) {
+      if (should_log_send_input(count, i)) {
+        log_send_input_result(i, count, retried_after_desktop_sync ? "ok_after_desktop_sync" : "ok");
       }
-      BOOST_LOG(error) << "Couldn't send input"sv;
+      return;
     }
+
+    auto error_code = GetLastError();
+    auto hDesk = syncThreadDesktop();
+    if (_lastKnownInputDesktop != hDesk) {
+      _lastKnownInputDesktop = hDesk;
+      retried_after_desktop_sync = true;
+      BOOST_LOG(warning) << "Windows SendInput failed before desktop sync retry #"sv << count
+                         << ": error="sv << error_code;
+      goto retry;
+    }
+
+    const auto failure_count = ++send_input_failure_count;
+    BOOST_LOG(error) << "Couldn't send input #"sv << count
+                     << " failure_count="sv << failure_count
+                     << " error="sv << error_code;
+    log_send_input_result(i, count, "failed", error_code);
   }
 
   /**

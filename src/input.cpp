@@ -9,6 +9,7 @@ extern "C" {
 }
 
 // standard includes
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -56,6 +57,25 @@ namespace input {
     DOWN,  ///< Button is down
     UP  ///< Button is up
   };
+
+  std::atomic_uint64_t rel_mouse_packet_count {};
+  std::atomic_uint64_t abs_mouse_packet_count {};
+  std::atomic_uint64_t mouse_button_packet_count {};
+  std::atomic_uint64_t mouse_scroll_packet_count {};
+  std::atomic_uint64_t keyboard_packet_count {};
+
+  bool should_log_input_packet(std::uint64_t count) {
+    return count <= 20 || count % 120 == 0;
+  }
+
+  void reset_input_diagnostics() {
+    rel_mouse_packet_count = 0;
+    abs_mouse_packet_count = 0;
+    mouse_button_packet_count = 0;
+    mouse_scroll_packet_count = 0;
+    keyboard_packet_count = 0;
+    BOOST_LOG(info) << "Input session diagnostics reset for new client"sv;
+  }
 
   template<std::size_t N>
   int alloc_id(std::bitset<N> &gamepad_mask) {
@@ -446,8 +466,17 @@ namespace input {
       return;
     }
 
+    const auto delta_x = util::endian::big(packet->deltaX);
+    const auto delta_y = util::endian::big(packet->deltaY);
+    const auto count = ++rel_mouse_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight relative mouse packet #"sv << count
+                      << ": dx="sv << delta_x
+                      << " dy="sv << delta_y;
+    }
+
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
-    platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
+    platf::move_mouse(platf_input, delta_x, delta_y);
   }
 
   /**
@@ -560,9 +589,20 @@ namespace input {
 
     auto width = (float) util::endian::big(packet->width);
     auto height = (float) util::endian::big(packet->height);
+    const auto count = ++abs_mouse_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight absolute mouse packet #"sv << count
+                      << ": x="sv << x
+                      << " y="sv << y
+                      << " width="sv << width
+                      << " height="sv << height;
+    }
 
     auto tpcoords = client_to_touchport(input, {x, y}, {width, height});
     if (!tpcoords) {
+      if (should_log_input_packet(count)) {
+        BOOST_LOG(warning) << "Moonlight absolute mouse packet ignored because touch port is not ready"sv;
+      }
       return;
     }
 
@@ -595,6 +635,12 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
+    const auto count = ++mouse_button_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight mouse button packet #"sv << count
+                      << ": button="sv << button
+                      << " release="sv << release;
+    }
     if (button > 0 && button < mouse_press.size()) {
       if (mouse_press[button] != release) {
         // button state is already what we want
@@ -759,6 +805,14 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC;
     auto keyCode = packet->keyCode & 0x00FF;
+    const auto count = ++keyboard_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight keyboard packet #"sv << count
+                      << ": keyCode="sv << keyCode
+                      << " release="sv << release
+                      << " flags="sv << static_cast<int>(packet->flags)
+                      << " modifiers="sv << static_cast<int>(packet->modifiers);
+    }
 
     // Set synthetic modifier flags if the keyboard packet is requesting modifier
     // keys that are not current pressed.
@@ -817,10 +871,17 @@ namespace input {
       return;
     }
 
+    const auto distance = util::endian::big(packet->scrollAmt1);
+    const auto count = ++mouse_scroll_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight vertical scroll packet #"sv << count
+                      << ": distance="sv << distance;
+    }
+
     if (config::input.high_resolution_scrolling) {
-      platf::scroll(platf_input, util::endian::big(packet->scrollAmt1));
+      platf::scroll(platf_input, distance);
     } else {
-      input->accumulated_vscroll_delta += util::endian::big(packet->scrollAmt1);
+      input->accumulated_vscroll_delta += distance;
       auto full_ticks = input->accumulated_vscroll_delta / WHEEL_DELTA;
       if (full_ticks) {
         // Send any full ticks that have accumulated and store the rest
@@ -840,10 +901,17 @@ namespace input {
       return;
     }
 
+    const auto distance = util::endian::big(packet->scrollAmount);
+    const auto count = ++mouse_scroll_packet_count;
+    if (should_log_input_packet(count)) {
+      BOOST_LOG(info) << "Moonlight horizontal scroll packet #"sv << count
+                      << ": distance="sv << distance;
+    }
+
     if (config::input.high_resolution_scrolling) {
-      platf::hscroll(platf_input, util::endian::big(packet->scrollAmount));
+      platf::hscroll(platf_input, distance);
     } else {
-      input->accumulated_hscroll_delta += util::endian::big(packet->scrollAmount);
+      input->accumulated_hscroll_delta += distance;
       auto full_ticks = input->accumulated_hscroll_delta / WHEEL_DELTA;
       if (full_ticks) {
         // Send any full ticks that have accumulated and store the rest
@@ -1682,6 +1750,8 @@ namespace input {
   }
 
   std::shared_ptr<input_t> alloc(safe::mail_t mail) {
+    reset_input_diagnostics();
+
     auto input = std::make_shared<input_t>(
       mail->event<input::touch_port_t>(mail::touch_port),
       mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback)
