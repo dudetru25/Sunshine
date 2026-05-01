@@ -327,9 +327,40 @@ namespace platf::dxgi {
 
     util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
 
+    auto bytes = shape_info.Pitch * shape_info.Height;
     auto pixel_begin = (std::uint32_t *) std::begin(cursor_img);
     auto and_mask = std::begin(img_data);
-    auto xor_mask = std::begin(img_data) + shape_info.Pitch * shape_info.Height;
+    auto xor_mask = std::begin(img_data) + bytes;
+
+    if (!flatten_monochrome && !monochrome_stats) {
+      auto pixel_data = pixel_begin;
+
+      for (auto x = 0; x < bytes; ++x) {
+        for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
+          auto bit = 1 << c;
+          auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
+
+          switch (color_type) {
+            case 0:  // Opaque black
+              *pixel_data = black;
+              break;
+            case 2:  // Opaque white
+              *pixel_data = white;
+              break;
+            case 3:  // Inverse of screen (handled by XOR blending)
+            case 1:  // Color of screen (transparent)
+              *pixel_data = transparent;
+              break;
+          }
+
+          ++pixel_data;
+        }
+        ++and_mask;
+        ++xor_mask;
+      }
+
+      return cursor_img;
+    }
 
     for (auto y = 0u; y < shape_info.Height; ++y) {
       for (auto byte_x = 0u; byte_x < shape_info.Pitch; ++byte_x) {
