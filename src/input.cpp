@@ -41,14 +41,6 @@ namespace input {
   constexpr auto MAX_GAMEPADS = std::min((std::size_t) platf::MAX_GAMEPADS, sizeof(std::int16_t) * 8);
 #define DISABLE_LEFT_BUTTON_DELAY ((thread_pool_util::ThreadPool::task_id_t) 0x01)
 #define ENABLE_LEFT_BUTTON_DELAY nullptr
-  std::atomic_bool relative_mouse_input_logged {false};
-  std::atomic_bool absolute_mouse_input_logged {false};
-  std::atomic_bool absolute_mouse_touch_port_logged {false};
-  std::atomic_uint32_t relative_mouse_input_count {0};
-  std::atomic_uint32_t absolute_mouse_input_count {0};
-  std::atomic_uint32_t absolute_mouse_ignored_count {0};
-  std::atomic_uint32_t mouse_button_input_count {0};
-
   bool should_log_mouse_packet(std::uint32_t count) {
     return count <= 10 || count % 240 == 0;
   }
@@ -205,6 +197,14 @@ namespace input {
 
     int32_t accumulated_vscroll_delta;
     int32_t accumulated_hscroll_delta;
+
+    std::atomic_bool relative_mouse_input_logged {false};
+    std::atomic_bool absolute_mouse_input_logged {false};
+    std::atomic_bool absolute_mouse_touch_port_logged {false};
+    std::atomic_uint32_t relative_mouse_input_count {0};
+    std::atomic_uint32_t absolute_mouse_input_count {0};
+    std::atomic_uint32_t absolute_mouse_ignored_count {0};
+    std::atomic_uint32_t mouse_button_input_count {0};
   };
 
   /**
@@ -458,11 +458,11 @@ namespace input {
       return;
     }
 
-    if (!relative_mouse_input_logged.exchange(true)) {
+    if (!input->relative_mouse_input_logged.exchange(true)) {
       BOOST_LOG(info) << "Moonlight mouse input mode: relative"sv;
     }
 
-    auto count = relative_mouse_input_count.fetch_add(1) + 1;
+    auto count = input->relative_mouse_input_count.fetch_add(1) + 1;
     if (should_log_mouse_packet(count)) {
       BOOST_LOG(info) << "Moonlight relative mouse packet #"sv << count
                       << ": dx="sv << util::endian::big(packet->deltaX)
@@ -566,11 +566,11 @@ namespace input {
       return;
     }
 
-    if (!absolute_mouse_input_logged.exchange(true)) {
+    if (!input->absolute_mouse_input_logged.exchange(true)) {
       BOOST_LOG(info) << "Moonlight mouse input mode: absolute"sv;
     }
 
-    auto count = absolute_mouse_input_count.fetch_add(1) + 1;
+    auto count = input->absolute_mouse_input_count.fetch_add(1) + 1;
     if (should_log_mouse_packet(count)) {
       BOOST_LOG(info) << "Moonlight absolute mouse packet #"sv << count
                       << ": x="sv << util::endian::big(packet->x)
@@ -599,7 +599,7 @@ namespace input {
 
     auto tpcoords = client_to_touchport(input, {x, y}, {width, height});
     if (!tpcoords) {
-      auto ignored_count = absolute_mouse_ignored_count.fetch_add(1) + 1;
+      auto ignored_count = input->absolute_mouse_ignored_count.fetch_add(1) + 1;
       if (should_log_mouse_packet(ignored_count)) {
         BOOST_LOG(warning) << "Moonlight absolute mouse packet ignored #"sv << ignored_count
                            << ": touch port unavailable x="sv << x
@@ -621,7 +621,7 @@ namespace input {
       touch_port_dim_y = touch_port.env_height;
     }
 
-    if (!absolute_mouse_touch_port_logged.exchange(true)) {
+    if (!input->absolute_mouse_touch_port_logged.exchange(true)) {
       BOOST_LOG(info) << "Moonlight absolute mouse touch port: offset="sv << touch_port.offset_x << ',' << touch_port.offset_y
                       << " dim="sv << touch_port.width << 'x' << touch_port.height
                       << " logical="sv << touch_port.logical_width << 'x' << touch_port.logical_height
@@ -649,10 +649,10 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
-    auto count = mouse_button_input_count.fetch_add(1) + 1;
+    auto count = input->mouse_button_input_count.fetch_add(1) + 1;
     if (should_log_mouse_packet(count)) {
       BOOST_LOG(info) << "Moonlight mouse button packet #"sv << count
-                      << ": button="sv << button
+                      << ": button="sv << static_cast<int>(button)
                       << " release="sv << release
                       << " left_timeout_active="sv << (input->mouse_left_button_timeout != nullptr);
     }
@@ -1748,6 +1748,7 @@ namespace input {
       mail->event<input::touch_port_t>(mail::touch_port),
       mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback)
     );
+    BOOST_LOG(info) << "Input session diagnostics reset for new client"sv;
 
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {
