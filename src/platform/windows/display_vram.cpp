@@ -1482,8 +1482,31 @@ namespace platf::dxgi {
           return capture_e::error;
         }
       } else {
+        monochrome_cursor_stats_t desktop_monochrome_stats {};
+        auto *desktop_monochrome_stats_p = shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &desktop_monochrome_stats : nullptr;
+        if (desktop_monochrome_stats_p) {
+          static_cast<void>(make_cursor_alpha_image(img_data, shape_info, true, desktop_monochrome_stats_p));
+        }
+
         auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info);
         auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+
+        if (!ddup_cursor_shape_logged) {
+          BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
+                          << " size="sv << shape_info.Width << 'x' << shape_info.Height
+                          << " pitch="sv << shape_info.Pitch
+                          << " buffer="sv << frame_info.PointerShapeBufferSize
+                          << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                          << " session_cursor_visible="sv << cursor_visible
+                          << " cursor_path=desktop_stock"sv;
+          if (desktop_monochrome_stats_p) {
+            BOOST_LOG(info) << "DDUP desktop monochrome cursor stats: black="sv << desktop_monochrome_stats.black
+                            << " white="sv << desktop_monochrome_stats.white
+                            << " inverted="sv << desktop_monochrome_stats.inverted
+                            << " transparent="sv << desktop_monochrome_stats.transparent;
+          }
+          ddup_cursor_shape_logged = true;
+        }
 
         if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
             !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
@@ -1497,17 +1520,16 @@ namespace platf::dxgi {
 
       cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
 
-      if (app_streaming) {
-        auto log_count = ++ddup_cursor_position_log_count;
-        if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
-          BOOST_LOG(info) << "DDUP cursor position update #"sv << log_count
-                          << ": x="sv << frame_info.PointerPosition.Position.x
-                          << " y="sv << frame_info.PointerPosition.Position.y
-                          << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                          << " session_cursor_visible="sv << cursor_visible
-                          << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible);
-          ddup_cursor_position_logged = true;
-        }
+      auto log_count = ++ddup_cursor_position_log_count;
+      if (!ddup_cursor_position_logged || log_count <= 10 || log_count % 120 == 0 || !frame_info.PointerPosition.Visible) {
+        BOOST_LOG(info) << "DDUP cursor position update #"sv << log_count
+                        << ": x="sv << frame_info.PointerPosition.Position.x
+                        << " y="sv << frame_info.PointerPosition.Position.y
+                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                        << " session_cursor_visible="sv << cursor_visible
+                        << " native_visible="sv << (frame_info.PointerPosition.Visible && cursor_visible)
+                        << " cursor_path="sv << (app_streaming ? "app"sv : "desktop_stock"sv);
+        ddup_cursor_position_logged = true;
       }
     }
 

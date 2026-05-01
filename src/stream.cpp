@@ -2041,7 +2041,7 @@ namespace stream {
       } else {
         session->config.monitor.window_id.clear();
         session->config.monitor.output_name.clear();
-        BOOST_LOG(info) << "Desktop session using stock monitor capture path: app_streaming=false output_name=[] cursor_compositing=global"sv;
+        BOOST_LOG(info) << "Desktop session using stock monitor capture path: app_streaming=false output_name=[] cursor_compositing=global global_cursor_visible="sv << display_cursor;
       }
 
       session->control.connect_data = launch_session.control_connect_data;
