@@ -209,8 +209,14 @@ namespace platf::dxgi {
     }
   };
 
+  struct monochrome_cursor_stats_t {
+    std::uint32_t black = 0;
+    std::uint32_t white = 0;
+    std::uint32_t inverted = 0;
+    std::uint32_t transparent = 0;
+  };
+
   util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
-    constexpr std::uint32_t inverted = 0xFFFFFFFF;
     constexpr std::uint32_t transparent = 0;
 
     switch (shape_info.Type) {
@@ -236,49 +242,18 @@ namespace platf::dxgi {
           return cursor_img;
         }
       case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
-        // Monochrome is handled below
-        break;
+        // Monochrome cursor XOR pixels are flattened into the alpha image below.
+        // This avoids depending on GPU invert blending for the normal Windows arrow.
+        return {};
       default:
         BOOST_LOG(error) << "Invalid cursor shape type: " << shape_info.Type;
         return {};
     }
 
-    shape_info.Height /= 2;
-
-    util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
-
-    auto bytes = shape_info.Pitch * shape_info.Height;
-    auto pixel_begin = (std::uint32_t *) std::begin(cursor_img);
-    auto pixel_data = pixel_begin;
-    auto and_mask = std::begin(img_data);
-    auto xor_mask = std::begin(img_data) + bytes;
-
-    for (auto x = 0; x < bytes; ++x) {
-      for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
-        auto bit = 1 << c;
-        auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
-
-        switch (color_type) {
-          case 0:  // Opaque black (handled by alpha-blending)
-          case 2:  // Opaque white (handled by alpha-blending)
-          case 1:  // Color of screen (transparent)
-            *pixel_data = transparent;
-            break;
-          case 3:  // Inverse of screen
-            *pixel_data = inverted;
-            break;
-        }
-
-        ++pixel_data;
-      }
-      ++and_mask;
-      ++xor_mask;
-    }
-
-    return cursor_img;
+    return {};
   }
 
-  util::buffer_t<std::uint8_t> make_cursor_alpha_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
+  util::buffer_t<std::uint8_t> make_cursor_alpha_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info, monochrome_cursor_stats_t *monochrome_stats = nullptr) {
     constexpr std::uint32_t black = 0xFF000000;
     constexpr std::uint32_t white = 0xFFFFFFFF;
     constexpr std::uint32_t transparent = 0;
@@ -318,34 +293,53 @@ namespace platf::dxgi {
 
     util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
 
-    auto bytes = shape_info.Pitch * shape_info.Height;
     auto pixel_begin = (std::uint32_t *) std::begin(cursor_img);
-    auto pixel_data = pixel_begin;
     auto and_mask = std::begin(img_data);
-    auto xor_mask = std::begin(img_data) + bytes;
+    auto xor_mask = std::begin(img_data) + shape_info.Pitch * shape_info.Height;
 
-    for (auto x = 0; x < bytes; ++x) {
-      for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
-        auto bit = 1 << c;
-        auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
+    for (auto y = 0u; y < shape_info.Height; ++y) {
+      for (auto byte_x = 0u; byte_x < shape_info.Pitch; ++byte_x) {
+        auto and_byte = and_mask[y * shape_info.Pitch + byte_x];
+        auto xor_byte = xor_mask[y * shape_info.Pitch + byte_x];
 
-        switch (color_type) {
-          case 0:  // Opaque black
-            *pixel_data = black;
+        for (auto bit_index = 0u; bit_index < 8; ++bit_index) {
+          auto x = byte_x * 8 + bit_index;
+          if (x >= shape_info.Width) {
             break;
-          case 2:  // Opaque white
-            *pixel_data = white;
-            break;
-          case 3:  // Inverse of screen (handled by XOR blending)
-          case 1:  // Color of screen (transparent)
-            *pixel_data = transparent;
-            break;
+          }
+
+          auto bit = 1 << (7 - bit_index);
+          auto color_type = ((and_byte & bit) ? 1 : 0) + ((xor_byte & bit) ? 2 : 0);
+          auto &pixel = pixel_begin[y * shape_info.Width + x];
+
+          switch (color_type) {
+            case 0:  // Opaque black
+              pixel = black;
+              if (monochrome_stats) {
+                ++monochrome_stats->black;
+              }
+              break;
+            case 2:  // Opaque white
+              pixel = white;
+              if (monochrome_stats) {
+                ++monochrome_stats->white;
+              }
+              break;
+            case 3:  // Inverse of screen; flatten to visible white for streaming.
+              pixel = white;
+              if (monochrome_stats) {
+                ++monochrome_stats->inverted;
+              }
+              break;
+            case 1:  // Color of screen (transparent)
+              pixel = transparent;
+              if (monochrome_stats) {
+                ++monochrome_stats->transparent;
+              }
+              break;
+          }
         }
-
-        ++pixel_data;
       }
-      ++and_mask;
-      ++xor_mask;
     }
 
     return cursor_img;
@@ -1184,6 +1178,10 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
+      monochrome_cursor_stats_t monochrome_stats {};
+      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr);
+      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+
       if (!ddup_cursor_shape_logged) {
         BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
                         << " size="sv << shape_info.Width << 'x' << shape_info.Height
@@ -1191,11 +1189,14 @@ namespace platf::dxgi {
                         << " buffer="sv << frame_info.PointerShapeBufferSize
                         << " pointer_visible="sv << frame_info.PointerPosition.Visible
                         << " session_cursor_visible="sv << cursor_visible;
+        if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+          BOOST_LOG(info) << "DDUP monochrome cursor flattened for stream visibility: black="sv << monochrome_stats.black
+                          << " white="sv << monochrome_stats.white
+                          << " inverted_as_white="sv << monochrome_stats.inverted
+                          << " transparent="sv << monochrome_stats.transparent;
+        }
         ddup_cursor_shape_logged = true;
       }
-
-      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info);
-      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
 
       if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
           !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
