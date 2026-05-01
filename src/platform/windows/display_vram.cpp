@@ -216,6 +216,148 @@ namespace platf::dxgi {
     std::uint32_t transparent = 0;
   };
 
+  util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
+    constexpr std::uint32_t inverted = 0xFFFFFFFF;
+    constexpr std::uint32_t transparent = 0;
+
+    switch (shape_info.Type) {
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
+        // This type doesn't require any XOR-blending
+        return {};
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR:
+        {
+          util::buffer_t<std::uint8_t> cursor_img = img_data;
+          std::for_each((std::uint32_t *) std::begin(cursor_img), (std::uint32_t *) std::end(cursor_img), [](auto &pixel) {
+            auto alpha = (std::uint8_t) ((pixel >> 24) & 0xFF);
+            if (alpha == 0xFF) {
+              // Pixels with 0xFF alpha will be XOR-blended as is.
+            } else if (alpha == 0x00) {
+              // Pixels with 0x00 alpha will be blended by make_cursor_alpha_image().
+              // We make them transparent for the XOR-blended cursor image.
+              pixel = transparent;
+            } else {
+              // Other alpha values are illegal in masked color cursors
+              BOOST_LOG(warning) << "Illegal alpha value in masked color cursor: " << alpha;
+            }
+          });
+          return cursor_img;
+        }
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
+        // Monochrome is handled below
+        break;
+      default:
+        BOOST_LOG(error) << "Invalid cursor shape type: " << shape_info.Type;
+        return {};
+    }
+
+    shape_info.Height /= 2;
+
+    util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
+
+    auto bytes = shape_info.Pitch * shape_info.Height;
+    auto pixel_begin = (std::uint32_t *) std::begin(cursor_img);
+    auto pixel_data = pixel_begin;
+    auto and_mask = std::begin(img_data);
+    auto xor_mask = std::begin(img_data) + bytes;
+
+    for (auto x = 0; x < bytes; ++x) {
+      for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
+        auto bit = 1 << c;
+        auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
+
+        switch (color_type) {
+          case 0:  // Opaque black (handled by alpha-blending)
+          case 2:  // Opaque white (handled by alpha-blending)
+          case 1:  // Color of screen (transparent)
+            *pixel_data = transparent;
+            break;
+          case 3:  // Inverse of screen
+            *pixel_data = inverted;
+            break;
+        }
+
+        ++pixel_data;
+      }
+      ++and_mask;
+      ++xor_mask;
+    }
+
+    return cursor_img;
+  }
+
+  util::buffer_t<std::uint8_t> make_cursor_alpha_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info) {
+    constexpr std::uint32_t black = 0xFF000000;
+    constexpr std::uint32_t white = 0xFFFFFFFF;
+    constexpr std::uint32_t transparent = 0;
+
+    switch (shape_info.Type) {
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR:
+        {
+          util::buffer_t<std::uint8_t> cursor_img = img_data;
+          std::for_each((std::uint32_t *) std::begin(cursor_img), (std::uint32_t *) std::end(cursor_img), [](auto &pixel) {
+            auto alpha = (std::uint8_t) ((pixel >> 24) & 0xFF);
+            if (alpha == 0xFF) {
+              // Pixels with 0xFF alpha will be XOR-blended by make_cursor_xor_image().
+              // We make them transparent for the alpha-blended cursor image.
+              pixel = transparent;
+            } else if (alpha == 0x00) {
+              // Pixels with 0x00 alpha will be blended as opaque with the alpha-blended image.
+              pixel |= 0xFF000000;
+            } else {
+              // Other alpha values are illegal in masked color cursors
+              BOOST_LOG(warning) << "Illegal alpha value in masked color cursor: " << alpha;
+            }
+          });
+          return cursor_img;
+        }
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
+        // Color cursors are just an ARGB bitmap which requires no processing.
+        return img_data;
+      case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
+        // Monochrome cursors are handled below.
+        break;
+      default:
+        BOOST_LOG(error) << "Invalid cursor shape type: " << shape_info.Type;
+        return {};
+    }
+
+    shape_info.Height /= 2;
+
+    util::buffer_t<std::uint8_t> cursor_img {shape_info.Width * shape_info.Height * 4};
+
+    auto bytes = shape_info.Pitch * shape_info.Height;
+    auto pixel_begin = (std::uint32_t *) std::begin(cursor_img);
+    auto pixel_data = pixel_begin;
+    auto and_mask = std::begin(img_data);
+    auto xor_mask = std::begin(img_data) + bytes;
+
+    for (auto x = 0; x < bytes; ++x) {
+      for (auto c = 7; c >= 0 && ((std::uint8_t *) pixel_data) != std::end(cursor_img); --c) {
+        auto bit = 1 << c;
+        auto color_type = ((*and_mask & bit) ? 1 : 0) + ((*xor_mask & bit) ? 2 : 0);
+
+        switch (color_type) {
+          case 0:  // Opaque black
+            *pixel_data = black;
+            break;
+          case 2:  // Opaque white
+            *pixel_data = white;
+            break;
+          case 3:  // Inverse of screen (handled by XOR blending)
+          case 1:  // Color of screen (transparent)
+            *pixel_data = transparent;
+            break;
+        }
+
+        ++pixel_data;
+      }
+      ++and_mask;
+      ++xor_mask;
+    }
+
+    return cursor_img;
+  }
+
   util::buffer_t<std::uint8_t> make_cursor_xor_image(const util::buffer_t<std::uint8_t> &img_data, DXGI_OUTDUPL_POINTER_SHAPE_INFO shape_info, bool flatten_monochrome) {
     constexpr std::uint32_t inverted = 0xFFFFFFFF;
     constexpr std::uint32_t transparent = 0;
@@ -1295,48 +1437,58 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
-      monochrome_cursor_stats_t monochrome_stats {};
-      auto *monochrome_stats_p = app_streaming && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr;
-      auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, app_streaming, monochrome_stats_p);
-      auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info, app_streaming);
-      DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
-      const auto monochrome_visible_pixels = monochrome_stats.black + monochrome_stats.white + monochrome_stats.inverted;
-      const bool using_empty_mono_fallback = app_streaming && shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
-      if (using_empty_mono_fallback) {
-        constexpr LONG fallback_width = 32;
-        constexpr LONG fallback_height = 32;
+      if (app_streaming) {
+        monochrome_cursor_stats_t monochrome_stats {};
+        auto *monochrome_stats_p = shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME ? &monochrome_stats : nullptr;
+        auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info, true, monochrome_stats_p);
+        auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info, true);
+        DXGI_OUTDUPL_POINTER_SHAPE_INFO texture_shape_info = shape_info;
+        const auto monochrome_visible_pixels = monochrome_stats.black + monochrome_stats.white + monochrome_stats.inverted;
+        const bool using_empty_mono_fallback = shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME && monochrome_visible_pixels == 0;
+        if (using_empty_mono_fallback) {
+          constexpr LONG fallback_width = 32;
+          constexpr LONG fallback_height = 32;
 
-        alpha_cursor_img = make_builtin_arrow_cursor_image(fallback_width, fallback_height);
-        xor_cursor_img = {};
-        texture_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
-        texture_shape_info.Width = fallback_width;
-        texture_shape_info.Height = fallback_height;
-        texture_shape_info.Pitch = fallback_width * 4;
-      }
-
-      if (app_streaming && !ddup_cursor_shape_logged) {
-        BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
-                        << " size="sv << shape_info.Width << 'x' << shape_info.Height
-                        << " pitch="sv << shape_info.Pitch
-                        << " buffer="sv << frame_info.PointerShapeBufferSize
-                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
-                        << " session_cursor_visible="sv << cursor_visible
-                        << " cursor_path=app"sv;
-        if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
-          BOOST_LOG(info) << "DDUP monochrome cursor flattened for stream visibility: black="sv << monochrome_stats.black
-                          << " white="sv << monochrome_stats.white
-                          << " inverted_as_white="sv << monochrome_stats.inverted
-                          << " transparent="sv << monochrome_stats.transparent;
-          if (using_empty_mono_fallback) {
-            BOOST_LOG(warning) << "DDUP monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
-          }
+          alpha_cursor_img = make_builtin_arrow_cursor_image(fallback_width, fallback_height);
+          xor_cursor_img = {};
+          texture_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+          texture_shape_info.Width = fallback_width;
+          texture_shape_info.Height = fallback_height;
+          texture_shape_info.Pitch = fallback_width * 4;
         }
-        ddup_cursor_shape_logged = true;
-      }
 
-      if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), texture_shape_info) ||
-          !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), texture_shape_info)) {
-        return capture_e::error;
+        if (!ddup_cursor_shape_logged) {
+          BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
+                          << " size="sv << shape_info.Width << 'x' << shape_info.Height
+                          << " pitch="sv << shape_info.Pitch
+                          << " buffer="sv << frame_info.PointerShapeBufferSize
+                          << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                          << " session_cursor_visible="sv << cursor_visible
+                          << " cursor_path=app"sv;
+          if (shape_info.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+            BOOST_LOG(info) << "DDUP monochrome cursor flattened for stream visibility: black="sv << monochrome_stats.black
+                            << " white="sv << monochrome_stats.white
+                            << " inverted_as_white="sv << monochrome_stats.inverted
+                            << " transparent="sv << monochrome_stats.transparent;
+            if (using_empty_mono_fallback) {
+              BOOST_LOG(warning) << "DDUP monochrome cursor shape was empty; using built-in arrow fallback texture"sv;
+            }
+          }
+          ddup_cursor_shape_logged = true;
+        }
+
+        if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), texture_shape_info) ||
+            !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), texture_shape_info)) {
+          return capture_e::error;
+        }
+      } else {
+        auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info);
+        auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
+
+        if (!set_cursor_texture(device.get(), cursor_alpha, std::move(alpha_cursor_img), shape_info) ||
+            !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
+          return capture_e::error;
+        }
       }
     }
 

@@ -475,6 +475,9 @@ namespace video {
   int start_capture_async(capture_thread_async_ctx_t &ctx);
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
+  // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread.
+  // Desktop sessions use this stock singleton path. App streams use a keyed map below so window/VDD sessions don't share capture state.
+  auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
   std::mutex capture_thread_async_map_mutex;
   std::unordered_map<std::string, std::weak_ptr<capture_thread_async_ctx_t>> capture_thread_async_map;
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
@@ -2505,74 +2508,81 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = ref_capture_thread_async(config);
-    if (!ref) {
-      return;
-    }
-
-    ref->capture_ctx_queue->raise(capture_ctx_t {images, config});
-
-    if (!ref->capture_ctx_queue->running()) {
-      return;
-    }
-
-    int frame_nr = 1;
-
-    auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
-    auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
-
-    // Encoding takes place on this thread
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
-
-    while (!shutdown_event->peek() && images->running()) {
-      // Wait for the main capture event when the display is being reinitialized
-      if (ref->reinit_event.peek()) {
-        std::this_thread::sleep_for(20ms);
-        continue;
-      }
-      // Wait for the display to be ready
-      std::shared_ptr<platf::display_t> display;
-      {
-        auto lg = ref->display_wp.lock();
-        if (ref->display_wp->expired()) {
-          continue;
-        }
-
-        display = ref->display_wp->lock();
-      }
-
-      auto &encoder = *chosen_encoder;
-
-      auto encode_device = make_encode_device(*display, encoder, config);
-      if (!encode_device) {
+    auto run_capture = [&](auto ref) {
+      if (!ref) {
         return;
       }
 
-      // absolute mouse coordinates require that the dimensions of the screen are known
-      touch_port_event->raise(make_port(display.get(), config));
+      ref->capture_ctx_queue->raise(capture_ctx_t {images, config});
 
-      // Update client with our current HDR display state
-      hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
-      if (colorspace_is_hdr(encode_device->colorspace)) {
-        if (display->get_hdr_metadata(hdr_info->metadata)) {
-          hdr_info->enabled = true;
-        } else {
-          BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
-        }
+      if (!ref->capture_ctx_queue->running()) {
+        return;
       }
-      hdr_event->raise(std::move(hdr_info));
 
-      encode_run(
-        frame_nr,
-        mail,
-        images,
-        config,
-        display,
-        std::move(encode_device),
-        ref->reinit_event,
-        *ref->encoder_p,
-        channel_data
-      );
+      int frame_nr = 1;
+
+      auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
+      auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
+
+      // Encoding takes place on this thread
+      platf::adjust_thread_priority(platf::thread_priority_e::high);
+
+      while (!shutdown_event->peek() && images->running()) {
+        // Wait for the main capture event when the display is being reinitialized
+        if (ref->reinit_event.peek()) {
+          std::this_thread::sleep_for(20ms);
+          continue;
+        }
+        // Wait for the display to be ready
+        std::shared_ptr<platf::display_t> display;
+        {
+          auto lg = ref->display_wp.lock();
+          if (ref->display_wp->expired()) {
+            continue;
+          }
+
+          display = ref->display_wp->lock();
+        }
+
+        auto &encoder = *chosen_encoder;
+
+        auto encode_device = make_encode_device(*display, encoder, config);
+        if (!encode_device) {
+          return;
+        }
+
+        // absolute mouse coordinates require that the dimensions of the screen are known
+        touch_port_event->raise(make_port(display.get(), config));
+
+        // Update client with our current HDR display state
+        hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
+        if (colorspace_is_hdr(encode_device->colorspace)) {
+          if (display->get_hdr_metadata(hdr_info->metadata)) {
+            hdr_info->enabled = true;
+          } else {
+            BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
+          }
+        }
+        hdr_event->raise(std::move(hdr_info));
+
+        encode_run(
+          frame_nr,
+          mail,
+          images,
+          config,
+          display,
+          std::move(encode_device),
+          ref->reinit_event,
+          *ref->encoder_p,
+          channel_data
+        );
+      }
+    };
+
+    if (config.app_streaming) {
+      run_capture(ref_capture_thread_async(config));
+    } else {
+      run_capture(capture_thread_async.ref());
     }
   }
 
