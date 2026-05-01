@@ -138,21 +138,21 @@ namespace platf::dxgi {
     }
 
     texture2d_t texture;
-    LONG texture_width;
-    LONG texture_height;
+    LONG texture_width = 0;
+    LONG texture_height = 0;
 
-    LONG topleft_x;
-    LONG topleft_y;
+    LONG topleft_x = 0;
+    LONG topleft_y = 0;
 
-    LONG display_width;
-    LONG display_height;
-    DXGI_MODE_ROTATION display_rotation;
+    LONG display_width = 0;
+    LONG display_height = 0;
+    DXGI_MODE_ROTATION display_rotation = DXGI_MODE_ROTATION_UNSPECIFIED;
 
     shader_res_t input_res;
 
     D3D11_VIEWPORT cursor_view;
 
-    bool visible;
+    bool visible = false;
   };
 
   class display_base_t: public display_t {
@@ -337,6 +337,10 @@ namespace platf::dxgi {
 
     gpu_cursor_t cursor_alpha;
     gpu_cursor_t cursor_xor;
+    bool ddup_cursor_test_box_ready = false;
+    bool ddup_cursor_test_box_logged = false;
+    bool ddup_cursor_shape_logged = false;
+    bool ddup_cursor_position_logged = false;
 
     texture2d_t old_surface_delayed_destruction;
     std::chrono::steady_clock::time_point old_surface_timestamp;

@@ -1145,6 +1145,20 @@ namespace platf::dxgi {
     return true;
   }
 
+  util::buffer_t<std::uint8_t> make_ddup_cursor_test_box() {
+    constexpr auto size = 32;
+    util::buffer_t<std::uint8_t> cursor_img(size * size * 4);
+
+    for (std::size_t i = 0; i < cursor_img.size(); i += 4) {
+      cursor_img[i + 0] = 0xFF;
+      cursor_img[i + 1] = 0xFF;
+      cursor_img[i + 2] = 0xFF;
+      cursor_img[i + 3] = 0xFF;
+    }
+
+    return cursor_img;
+  }
+
   capture_e display_ddup_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     HRESULT status;
     DXGI_OUTDUPL_FRAME_INFO frame_info;
@@ -1184,6 +1198,16 @@ namespace platf::dxgi {
         return capture_e::error;
       }
 
+      if (!ddup_cursor_shape_logged) {
+        BOOST_LOG(info) << "DDUP cursor shape fetched: type="sv << shape_info.Type
+                        << " size="sv << shape_info.Width << 'x' << shape_info.Height
+                        << " pitch="sv << shape_info.Pitch
+                        << " buffer="sv << frame_info.PointerShapeBufferSize
+                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                        << " session_cursor_visible="sv << cursor_visible;
+        ddup_cursor_shape_logged = true;
+      }
+
       auto alpha_cursor_img = make_cursor_alpha_image(img_data, shape_info);
       auto xor_cursor_img = make_cursor_xor_image(img_data, shape_info);
 
@@ -1191,12 +1215,47 @@ namespace platf::dxgi {
           !set_cursor_texture(device.get(), cursor_xor, std::move(xor_cursor_img), shape_info)) {
         return capture_e::error;
       }
+      ddup_cursor_test_box_ready = false;
     }
 
     if (frame_info.LastMouseUpdateTime.QuadPart) {
-      cursor_alpha.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
+      cursor_alpha.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, true);
 
-      cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, frame_info.PointerPosition.Visible);
+      cursor_xor.set_pos(frame_info.PointerPosition.Position.x, frame_info.PointerPosition.Position.y, width, height, display_rotation, true);
+
+      if (!ddup_cursor_position_logged) {
+        BOOST_LOG(info) << "DDUP cursor position update: x="sv << frame_info.PointerPosition.Position.x
+                        << " y="sv << frame_info.PointerPosition.Position.y
+                        << " pointer_visible="sv << frame_info.PointerPosition.Visible
+                        << " forced_visible_for_test_box="sv << cursor_visible;
+        ddup_cursor_position_logged = true;
+      }
+    }
+
+    if (cursor_visible && !ddup_cursor_test_box_ready) {
+      DXGI_OUTDUPL_POINTER_SHAPE_INFO test_shape_info {};
+      test_shape_info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+      test_shape_info.Width = 32;
+      test_shape_info.Height = 32;
+      test_shape_info.Pitch = 32 * 4;
+
+      auto test_cursor_img = make_ddup_cursor_test_box();
+      util::buffer_t<std::uint8_t> empty_xor_img {};
+      if (!set_cursor_texture(device.get(), cursor_alpha, std::move(test_cursor_img), test_shape_info) ||
+          !set_cursor_texture(device.get(), cursor_xor, std::move(empty_xor_img), test_shape_info)) {
+        return capture_e::error;
+      }
+
+      if (!cursor_alpha.visible) {
+        cursor_alpha.set_pos(0, 0, width, height, display_rotation, true);
+        cursor_xor.set_pos(0, 0, width, height, display_rotation, false);
+      }
+
+      ddup_cursor_test_box_ready = true;
+      if (!ddup_cursor_test_box_logged) {
+        BOOST_LOG(info) << "DDUP cursor diagnostic white box active: 32x32 session_cursor_visible="sv << cursor_visible;
+        ddup_cursor_test_box_logged = true;
+      }
     }
 
     const bool blend_mouse_cursor_flag = (cursor_alpha.visible || cursor_xor.visible) && cursor_visible;
