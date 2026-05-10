@@ -1941,7 +1941,11 @@ namespace stream {
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
-        if (proc::proc.running()) {
+        if (proc::proc.should_terminate_on_disconnect()) {
+          BOOST_LOG(info) << "Terminating app-streaming application after last client disconnected"sv;
+          proc::proc.terminate();
+          revert_display_config = true;
+        } else if (proc::proc.running()) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
           system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
 #endif

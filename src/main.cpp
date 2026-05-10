@@ -56,6 +56,27 @@ std::map<std::string_view, std::function<int(const char *name, int argc, char **
   {"version"sv, [](const char *name, int argc, char **argv) {
      return args::version();
    }},
+  {"modules"sv, [](const char *name, int argc, char **argv) {
+     return args::modules(name, argc, argv);
+   }},
+  {"module"sv, [](const char *name, int argc, char **argv) {
+     return args::module(name, argc, argv);
+   }},
+  {"app-streaming-status"sv, [](const char *name, int argc, char **argv) {
+     return args::app_streaming_status(name, argc, argv);
+   }},
+  {"app-streaming-cleanup"sv, [](const char *name, int argc, char **argv) {
+     return args::app_streaming_cleanup(name, argc, argv);
+   }},
+  {"app-streaming-discover"sv, [](const char *name, int argc, char **argv) {
+     return args::app_streaming_discover(name, argc, argv);
+   }},
+  {"app-streaming-doctor"sv, [](const char *name, int argc, char **argv) {
+     return args::app_streaming_doctor(name, argc, argv);
+   }},
+  {"config"sv, [](const char *name, int argc, char **argv) {
+     return args::config_cmd(name, argc, argv);
+   }},
 #ifdef _WIN32
   {"restore-nvprefs-undo"sv, [](const char *name, int argc, char **argv) {
      return args::restore_nvprefs_undo();

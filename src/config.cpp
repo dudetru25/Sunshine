@@ -546,6 +546,25 @@ namespace config {
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
   };
 
+  app_streaming_t app_streaming {
+    true,  // enabled
+    "sudovda"s,  // provider
+    true,  // startup_cleanup
+    "client"s,  // default_resolution
+    "windowed"s,  // default_client_display_mode
+    true,  // default_client_app_window
+    true,  // default_client_absolute_mouse
+    false,  // default_show_cursor
+    false,  // default_terminate_on_disconnect
+    60000ms,  // window_timeout
+    1800000ms,  // window_follow_timeout
+    true,  // follow_windows
+    true,  // borderless_windows
+    true,  // discover_start_menu
+    "SunshineVDD"s,  // sudovda_device_name
+    "Sunshine0001"s,  // sudovda_serial
+  };
+
   nvhttp_t nvhttp {
     "lan",  // origin web manager
 
@@ -664,7 +683,7 @@ namespace config {
     auto end_name = std::find_if_not(std::make_reverse_iterator(eq), std::make_reverse_iterator(begin), space_tab).base();
     auto begin_val = std::find_if_not(eq + 1, endc, space_tab);
 
-    if (begin_val == endl) {
+    if (begin_val == endc) {
       return std::make_pair(endl, std::nullopt);
     }
 
@@ -770,11 +789,17 @@ namespace config {
     // appdata needs to be retrieved once only
     static auto appdata = platf::appdata();
 
-    std::string temp;
-    string_f(vars, name, temp);
+    auto it = vars.find(name);
+    if (it != std::end(vars)) {
+      if (!it->second.empty()) {
+        input = std::move(it->second);
+      }
 
-    if (!temp.empty()) {
-      input = temp;
+      vars.erase(it);
+    }
+
+    if (input.empty()) {
+      return;
     }
 
     if (input.is_relative()) {
@@ -1267,6 +1292,35 @@ namespace config {
 #endif
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
+
+    bool_f(vars, "app_streaming_enabled", app_streaming.enabled);
+    string_restricted_f(vars, "app_streaming_provider", app_streaming.provider, {"sudovda"sv});
+    bool_f(vars, "app_streaming_startup_cleanup", app_streaming.startup_cleanup);
+    string_f(vars, "app_streaming_default_resolution", app_streaming.default_resolution);
+    string_restricted_f(vars, "app_streaming_default_client_display_mode", app_streaming.default_client_display_mode, {"windowed"sv, "borderless"sv, "fullscreen"sv});
+    bool_f(vars, "app_streaming_default_client_app_window", app_streaming.default_client_app_window);
+    bool_f(vars, "app_streaming_default_client_absolute_mouse", app_streaming.default_client_absolute_mouse);
+    bool_f(vars, "app_streaming_default_show_cursor", app_streaming.default_show_cursor);
+    bool_f(vars, "app_streaming_default_terminate_on_disconnect", app_streaming.default_terminate_on_disconnect);
+    {
+      int value = -1;
+      int_between_f(vars, "app_streaming_window_timeout_ms", value, {0, std::numeric_limits<int>::max()});
+      if (value >= 0) {
+        app_streaming.window_timeout = std::chrono::milliseconds {value};
+      }
+    }
+    {
+      int value = -1;
+      int_between_f(vars, "app_streaming_window_follow_timeout_ms", value, {0, std::numeric_limits<int>::max()});
+      if (value >= 0) {
+        app_streaming.window_follow_timeout = std::chrono::milliseconds {value};
+      }
+    }
+    bool_f(vars, "app_streaming_follow_windows", app_streaming.follow_windows);
+    bool_f(vars, "app_streaming_borderless_windows", app_streaming.borderless_windows);
+    bool_f(vars, "app_streaming_discover_start_menu", app_streaming.discover_start_menu);
+    string_f(vars, "app_streaming_sudovda_device_name", app_streaming.sudovda_device_name);
+    string_f(vars, "app_streaming_sudovda_serial", app_streaming.sudovda_serial);
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
 

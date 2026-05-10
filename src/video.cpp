@@ -1196,6 +1196,18 @@ namespace video {
     }
   }
 
+  std::string capture_output_name(const config_t &config) {
+    if (!config.app_streaming) {
+      return display_device::map_output_name(config::video.output_name);
+    }
+
+    if (!config.output_name.empty()) {
+      return config.output_name;
+    }
+
+    return display_device::map_output_name(config::video.output_name);
+  }
+
   /**
    * @brief Update the list of display names before or during a stream.
    * @details This will attempt to keep `current_display_index` pointing at the same display.
@@ -1203,9 +1215,9 @@ namespace video {
    * @param display_names The list of display names to repopulate.
    * @param current_display_index The current display index or -1 if not yet known.
    */
-  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index) {
+  void refresh_displays(platf::mem_type_e dev_type, const config_t &config, std::vector<std::string> &display_names, int &current_display_index) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
-    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    const auto output_name {capture_output_name(config)};
     std::string current_display_name;
 
     // If we have a current display index, let's start with that
@@ -1247,6 +1259,16 @@ namespace video {
           return;
         }
       }
+
+      if (!output_name.empty()) {
+        BOOST_LOG(warning) << "Requested capture output ["sv << output_name << "] was not found in the current display list."sv;
+        if (config.app_streaming) {
+          display_names.clear();
+          display_names.emplace_back(output_name);
+          current_display_index = 0;
+          return;
+        }
+      }
     }
   }
 
@@ -1283,7 +1305,7 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config, display_names, display_p);
     auto disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
     if (!disp) {
       return;
@@ -1425,7 +1447,9 @@ namespace video {
         return true;
       };
 
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+      auto cursor_visible = capture_ctxs.front().config.cursor_visible;
+      auto *cursor_visible_p = capture_ctxs.front().config.app_streaming ? &cursor_visible : &display_cursor;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, cursor_visible_p);
 
       if (artificial_reinit && status != platf::capture_e::error) {
         status = platf::capture_e::reinit;
@@ -1473,7 +1497,7 @@ namespace video {
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+              refresh_displays(encoder.platform_formats->dev_type, capture_ctxs.front().config, display_names, display_p);
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -2285,7 +2309,7 @@ namespace video {
 
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      refresh_displays(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config, display_names, display_p);
 
       // Process any pending display switch with the new list of displays
       if (switch_display_event->peek()) {
@@ -2399,7 +2423,9 @@ namespace video {
         return true;
       };
 
-      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+      auto cursor_visible = synced_session_ctxs.front()->config.cursor_visible;
+      auto *cursor_visible_p = synced_session_ctxs.front()->config.app_streaming ? &cursor_visible : &display_cursor;
+      auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, cursor_visible_p);
       switch (status) {
         case platf::capture_e::reinit:
         case platf::capture_e::error:

@@ -179,6 +179,25 @@ namespace config {
     int wan_encryption_mode;
   };
 
+  struct app_streaming_t {
+    bool enabled;
+    std::string provider;
+    bool startup_cleanup;
+    std::string default_resolution;
+    std::string default_client_display_mode;
+    bool default_client_app_window;
+    bool default_client_absolute_mouse;
+    bool default_show_cursor;
+    bool default_terminate_on_disconnect;
+    std::chrono::milliseconds window_timeout;
+    std::chrono::milliseconds window_follow_timeout;
+    bool follow_windows;
+    bool borderless_windows;
+    bool discover_start_menu;
+    std::string sudovda_device_name;
+    std::string sudovda_serial;
+  };
+
   struct nvhttp_t {
     // Could be any of the following values:
     // pc|lan|wan
@@ -280,10 +299,12 @@ namespace config {
   extern video_t video;
   extern audio_t audio;
   extern stream_t stream;
+  extern app_streaming_t app_streaming;
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
+  void apply_config(std::unordered_map<std::string, std::string> &&vars);
 }  // namespace config

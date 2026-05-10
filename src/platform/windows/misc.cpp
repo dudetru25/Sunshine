@@ -954,6 +954,15 @@ namespace platf {
       }
     });
 
+    auto should_retry_without_job_breakaway = [](DWORD creation_flags) {
+      return GetLastError() == ERROR_ACCESS_DENIED && !!(creation_flags & CREATE_BREAKAWAY_FROM_JOB);
+    };
+
+    auto retry_flags_without_job_breakaway = [](DWORD creation_flags) {
+      BOOST_LOG(warning) << "Process launch was denied while requesting job breakaway; retrying inside the current job."sv;
+      return creation_flags & ~CREATE_BREAKAWAY_FROM_JOB;
+    };
+
     BOOL ret;
     if (is_running_as_system()) {
       // Duplicate the current user's token
@@ -978,8 +987,15 @@ namespace platf {
       // Open the process as the current user account, elevation is handled in the token itself.
       ec = impersonate_current_user(user_token, [&]() {
         std::wstring env_block = create_environment_block(cloned_env);
-        std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, creation_flags);
-        ret = CreateProcessAsUserW(user_token, nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+        auto launch_process = [&](DWORD requested_creation_flags) {
+          std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, requested_creation_flags);
+          return CreateProcessAsUserW(user_token, nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), requested_creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+        };
+
+        ret = launch_process(creation_flags);
+        if (!ret && should_retry_without_job_breakaway(creation_flags)) {
+          ret = launch_process(retry_flags_without_job_breakaway(creation_flags));
+        }
       });
     }
     // Otherwise, launch the process using CreateProcessW()
@@ -1002,8 +1018,15 @@ namespace platf {
       }
 
       std::wstring env_block = create_environment_block(cloned_env);
-      std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, creation_flags);
-      ret = CreateProcessW(nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+      auto launch_process = [&](DWORD requested_creation_flags) {
+        std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, requested_creation_flags);
+        return CreateProcessW(nullptr, (LPWSTR) wcmd.c_str(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), requested_creation_flags, env_block.data(), start_dir.empty() ? nullptr : start_dir.c_str(), (LPSTARTUPINFOW) &startup_info, &process_info);
+      };
+
+      ret = launch_process(creation_flags);
+      if (!ret && should_retry_without_job_breakaway(creation_flags)) {
+        ret = launch_process(retry_flags_without_job_breakaway(creation_flags));
+      }
     }
 
     // Use the results of the launch to create a bp::child object

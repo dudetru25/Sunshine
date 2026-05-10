@@ -31,6 +31,7 @@ protected:
       {"Network", "network"},
       {"Config Files", "files"},
       {"Advanced", "advanced"},
+      {"Modules", "modules"},
       {"NVIDIA NVENC Encoder", "nv"},
       {"Intel QuickSync Encoder", "qsv"},
       {"AMD AMF Encoder", "amd"},

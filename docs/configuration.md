@@ -2166,6 +2166,104 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+## Modules
+
+### app_streaming_enabled
+
+Enable apps configured with `capture-mode = vdd` to use Sunshine's app-streaming module.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_provider
+
+Virtual display provider used by app streaming. The current supported provider is `sudovda`. Sunshine opens the SudoVDA driver directly, creates a module-owned virtual display when an app stream starts, and removes it when the session ends.
+
+Default: @code{}sudovda@endcode
+
+### app_streaming_startup_cleanup
+
+Release stale module-owned virtual displays left behind by a previous Sunshine crash when it is safe to do so.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_default_resolution
+
+Default app-streaming resolution for apps that do not override `stream-resolution`. Use `client` or `WIDTHxHEIGHT`.
+
+Default: @code{}client@endcode
+
+### app_streaming_default_client_display_mode
+
+Default Moonlight display mode for app streams. Choices are `windowed`, `borderless`, and `fullscreen`.
+
+Default: @code{}windowed@endcode
+
+### app_streaming_default_client_app_window
+
+Ask compatible Moonlight clients to present app streams as application windows by default.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_default_client_absolute_mouse
+
+Use absolute mouse input by default for app-window streams.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_default_show_cursor
+
+Deprecated. App-streaming sessions force the host cursor off so the client cursor is the only visible cursor. Desktop streams still render the host cursor normally.
+
+Default: @code{}disabled@endcode
+
+### app_streaming_default_terminate_on_disconnect
+
+Terminate app-streaming applications when the client disconnects unless an app overrides it.
+
+Default: @code{}disabled@endcode
+
+### app_streaming_window_timeout_ms
+
+How long in milliseconds Sunshine should wait for the launched app window before failing the session.
+
+Default: @code{}60000@endcode
+
+### app_streaming_window_follow_timeout_ms
+
+How long in milliseconds Sunshine should continue moving newly-created matching windows to the virtual display.
+
+Default: @code{}1800000@endcode
+
+### app_streaming_follow_windows
+
+Move newly-created matching app windows to the virtual display during the follow timeout.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_borderless_windows
+
+Move matched app windows to the virtual display and size them to fill that display without borders.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_discover_start_menu
+
+Allow Sunshine to discover launchable Windows Start Menu shortcuts for app-streaming setup.
+
+Default: @code{}enabled@endcode
+
+### app_streaming_sudovda_device_name
+
+Display identity used when Sunshine creates its module-owned SudoVDA display. SudoVDA accepts up to 13 ASCII characters.
+
+Default: @code{}SunshineVDD@endcode
+
+### app_streaming_sudovda_serial
+
+Stable serial used by Windows to remember the app-streaming display layout. SudoVDA accepts up to 13 ASCII characters.
+
+Default: @code{}Sunshine0001@endcode
+
 ## NVIDIA NVENC Encoder
 
 ### nvenc_preset

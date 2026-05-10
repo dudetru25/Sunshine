@@ -10,6 +10,7 @@
 
 // standard includes
 #include <optional>
+#include <string>
 #include <unordered_map>
 
 // lib includes
@@ -63,6 +64,18 @@ namespace proc {
     std::string output;
     std::string image_path;
     std::string id;
+    std::string capture_mode;
+    std::string window_match;
+    std::string stream_resolution;
+    std::string stream_output_name;
+    std::string client_display_mode;
+    bool app_streaming {};
+    bool client_app_window_set {};
+    bool client_app_window {};
+    bool client_absolute_mouse_set {};
+    bool client_absolute_mouse {};
+    bool show_cursor {true};
+    bool terminate_on_disconnect {};
     bool elevated;
     bool auto_detach;
     bool wait_all;
@@ -95,6 +108,12 @@ namespace proc {
     std::vector<ctx_t> &get_apps();
     std::string get_app_image(int app_id);
     std::string get_last_run_app_name();
+    int prepare_launch_session(int app_id, rtsp_stream::launch_session_t &launch_session);
+    int prepare_resume_session(rtsp_stream::launch_session_t &launch_session);
+    void cancel_prepared_launch();
+    int apply_session_overrides(int app_id, rtsp_stream::launch_session_t &launch_session) const;
+    void apply_session_overrides(rtsp_stream::launch_session_t &launch_session) const;
+    bool should_terminate_on_disconnect() const;
     void terminate();
 
   private:

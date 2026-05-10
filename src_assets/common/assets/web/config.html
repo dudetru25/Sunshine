@@ -93,6 +93,12 @@
         :platform="platform">
       </advanced>
 
+      <!-- Modules Tab -->
+      <modules
+        v-if="currentTab === 'modules'"
+        :config="config">
+      </modules>
+
       <container-encoders
         :current-tab="currentTab"
         :config="config"
@@ -131,6 +137,7 @@
   import Network from './configs/tabs/Network.vue'
   import Files from './configs/tabs/Files.vue'
   import Advanced from './configs/tabs/Advanced.vue'
+  import Modules from './configs/tabs/Modules.vue'
   import AudioVideo from './configs/tabs/AudioVideo.vue'
   import ContainerEncoders from './configs/tabs/ContainerEncoders.vue'
   import {$tp, usePlatformI18n} from './platform-i18n'
@@ -141,6 +148,7 @@
     Gamepad2,
     Gpu,
     Network as NetworkIcon,
+    Puzzle,
     Save,
     Search,
     Settings,
@@ -156,6 +164,7 @@
       Network,
       Files,
       Advanced,
+      Modules,
       // They will be accessible via audio-video, container-encoders only.
       AudioVideo,
       ContainerEncoders,
@@ -166,6 +175,7 @@
       Gamepad2,
       Gpu,
       NetworkIcon,
+      Puzzle,
       Save,
       Search,
       Settings,
@@ -278,6 +288,28 @@
               "av1_mode": 0,
               "capture": "",
               "encoder": "",
+            },
+          },
+          {
+            id: "modules",
+            name: "Modules",
+            options: {
+              "app_streaming_enabled": "enabled",
+              "app_streaming_provider": "sudovda",
+              "app_streaming_startup_cleanup": "enabled",
+              "app_streaming_default_resolution": "client",
+              "app_streaming_default_client_display_mode": "windowed",
+              "app_streaming_default_client_app_window": "enabled",
+              "app_streaming_default_client_absolute_mouse": "enabled",
+              "app_streaming_default_show_cursor": "disabled",
+              "app_streaming_default_terminate_on_disconnect": "disabled",
+              "app_streaming_window_timeout_ms": 60000,
+              "app_streaming_window_follow_timeout_ms": 1800000,
+              "app_streaming_follow_windows": "enabled",
+              "app_streaming_borderless_windows": "enabled",
+              "app_streaming_discover_start_menu": "enabled",
+              "app_streaming_sudovda_device_name": "SunshineVDD",
+              "app_streaming_sudovda_serial": "Sunshine0001",
             },
           },
           {
@@ -441,6 +473,7 @@
           'network': 'NetworkIcon',
           'files': 'FileCog',
           'advanced': 'Sliders',
+          'modules': 'Puzzle',
           'nv': 'Gpu',
           'amd': 'Gpu',
           'qsv': 'Gpu',
@@ -463,22 +496,6 @@
 
         // create a temp copy of this.config to use for the post request
         let config = this.serialize();
-
-        // delete default values from this.config
-        this.tabs.forEach(tab => {
-          Object.keys(tab.options).forEach(optionKey => {
-            let delete_value = false
-
-            // todo: add proper type checking
-            if (JSON.stringify(config[optionKey]) === JSON.stringify(tab.options[optionKey])) {
-              delete_value = true
-            }
-
-            if (delete_value) {
-              delete config[optionKey]
-            }
-          });
-        });
 
         return apiFetch("./api/config", {
           method: "POST",

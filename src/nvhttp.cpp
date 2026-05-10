@@ -814,6 +814,21 @@ namespace nvhttp {
       app.put("IsHdrSupported"s, video::active_hevc_mode == 3 ? 1 : 0);
       app.put("AppTitle"s, proc.name);
       app.put("ID", proc.id);
+      if (proc.app_streaming) {
+        app.put("AppCaptureMode"s, proc.capture_mode);
+        if (!proc.stream_resolution.empty()) {
+          app.put("AppStreamResolution"s, proc.stream_resolution);
+        }
+        if (!proc.client_display_mode.empty()) {
+          app.put("AppClientDisplayMode"s, proc.client_display_mode);
+        }
+        if (proc.client_app_window_set) {
+          app.put("AppClientAppWindow"s, proc.client_app_window ? 1 : 0);
+        }
+        if (proc.client_absolute_mouse_set) {
+          app.put("AppClientAbsoluteMouse"s, proc.client_absolute_mouse ? 1 : 0);
+        }
+      }
 
       apps.push_back(std::make_pair("App", std::move(app)));
     }
@@ -867,6 +882,16 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    if (appid > 0) {
+      auto err = proc::proc.prepare_launch_session((int) appid, *launch_session);
+      if (err) {
+        tree.put("root.<xmlattr>.status_code", err);
+        tree.put("root.<xmlattr>.status_message", "Failed to prepare the specified application");
+        tree.put("root.gamesession", 0);
+
+        return;
+      }
+    }
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -882,6 +907,7 @@ namespace nvhttp {
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
       if (video::probe_encoders()) {
+        proc::proc.cancel_prepared_launch();
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
@@ -893,6 +919,7 @@ namespace nvhttp {
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
     if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
       BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
+      proc::proc.cancel_prepared_launch();
 
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
@@ -904,6 +931,7 @@ namespace nvhttp {
     if (appid > 0) {
       auto err = proc::proc.execute((int) appid, launch_session);
       if (err) {
+        proc::proc.cancel_prepared_launch();
         tree.put("root.<xmlattr>.status_code", err);
         tree.put("root.<xmlattr>.status_message", "Failed to start the specified application");
         tree.put("root.gamesession", 0);
@@ -975,6 +1003,13 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    if (auto err = proc::proc.prepare_resume_session(*launch_session); err) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", err);
+      tree.put("root.<xmlattr>.status_message", "Failed to prepare the running application");
+
+      return;
+    }
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at

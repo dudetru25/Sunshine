@@ -22,6 +22,7 @@
 #include <openssl/sha.h>
 
 // local includes
+#include "app_streaming.h"
 #include "config.h"
 #include "crypto.h"
 #include "display_device.h"
@@ -45,6 +46,82 @@ namespace proc {
 
   proc_t proc;
 
+  void apply_session_overrides_from_app(const ctx_t &app, rtsp_stream::launch_session_t &launch_session) {
+    launch_session.app_streaming = app.app_streaming;
+    launch_session.capture_mode = app.capture_mode;
+    if (!app.app_streaming) {
+      launch_session.output_name.clear();
+    } else if (launch_session.output_name.empty() && !app.stream_output_name.empty()) {
+      launch_session.output_name = app.stream_output_name;
+    }
+    launch_session.show_cursor = app.app_streaming ? false : true;
+  }
+
+  bool parse_stream_resolution(const std::string &value, int &width, int &height) {
+    auto normalized = value;
+    boost::algorithm::trim(normalized);
+    boost::algorithm::to_lower(normalized);
+
+    auto separator = normalized.find('x');
+    if (separator == std::string::npos) {
+      return false;
+    }
+
+    try {
+      width = std::stoi(normalized.substr(0, separator));
+      height = std::stoi(normalized.substr(separator + 1));
+    } catch (...) {
+      return false;
+    }
+
+    return width > 0 && height > 0;
+  }
+
+  std::optional<app_streaming::display_mode_t> resolve_app_streaming_mode(const ctx_t &app, rtsp_stream::launch_session_t &launch_session, std::string &error) {
+    app_streaming::display_mode_t mode {
+      launch_session.width,
+      launch_session.height,
+      launch_session.fps > 0 ? launch_session.fps : 60,
+    };
+
+    auto resolution = app.stream_resolution;
+    boost::algorithm::trim(resolution);
+    boost::algorithm::to_lower(resolution);
+
+    if (!resolution.empty() && resolution != "client"sv && resolution != "default"sv) {
+      int width {};
+      int height {};
+      if (!parse_stream_resolution(resolution, width, height)) {
+        error = "Invalid stream-resolution [" + app.stream_resolution + "]. Use [client] or [WIDTHxHEIGHT].";
+        return std::nullopt;
+      }
+      mode.width = width;
+      mode.height = height;
+    }
+
+    if (mode.width < 640 || mode.height < 480 || mode.width > 7680 || mode.height > 4320) {
+      error = "App-streaming resolution is outside the supported SudoVDA range [640x480..7680x4320].";
+      return std::nullopt;
+    }
+
+    launch_session.width = mode.width;
+    launch_session.height = mode.height;
+    launch_session.fps = mode.fps;
+    return mode;
+  }
+
+  app_streaming::session_request_t make_app_streaming_request(const ctx_t &app, const app_streaming::display_mode_t &mode) {
+    return app_streaming::session_request_t {
+      app.name,
+      app.window_match.empty() ? app.name : app.window_match,
+      mode,
+      config::app_streaming.borderless_windows,
+      config::app_streaming.follow_windows,
+      std::chrono::duration_cast<std::chrono::seconds>(config::app_streaming.window_timeout),
+      std::chrono::duration_cast<std::chrono::seconds>(config::app_streaming.window_follow_timeout),
+    };
+  }
+
   class deinit_t: public platf::deinit_t {
   public:
     ~deinit_t() {
@@ -53,6 +130,10 @@ namespace proc {
   };
 
   std::unique_ptr<platf::deinit_t> init() {
+    app_streaming::init(platf::appdata() / "app_streaming.state");
+    if (config::app_streaming.startup_cleanup) {
+      app_streaming::startup_cleanup();
+    }
     return std::make_unique<deinit_t>();
   }
 
@@ -136,9 +217,6 @@ namespace proc {
   }
 
   int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
-    // Ensure starting from a clean slate
-    terminate();
-
     auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
       return app.id == std::to_string(app_id);
     });
@@ -148,14 +226,32 @@ namespace proc {
       return 404;
     }
 
+    // Ensure starting from a clean slate without cancelling the VDD reservation
+    // prepared for this app before display configuration.
+    if (_app_id > 0 || !iter->app_streaming) {
+      terminate();
+    }
+
+    if (iter->app_streaming && launch_session->output_name.empty()) {
+      BOOST_LOG(error) << "App streaming requires a reserved session-scoped virtual display output before launch."sv;
+      return 501;
+    }
+
     _app_id = app_id;
     _app = *iter;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
+    apply_session_overrides(*launch_session);
+
     // Add Stream-specific environment variables
     _env["SUNSHINE_APP_ID"] = std::to_string(_app_id);
     _env["SUNSHINE_APP_NAME"] = _app.name;
+    _env["SUNSHINE_APP_CAPTURE_MODE"] = _app.capture_mode;
+    _env["SUNSHINE_APP_STREAMING"] = _app.app_streaming ? "true" : "false";
+    _env["SUNSHINE_APP_WINDOW_MATCH"] = _app.window_match;
+    _env["SUNSHINE_APP_STREAM_RESOLUTION"] = _app.stream_resolution;
+    _env["SUNSHINE_APP_STREAM_OUTPUT_NAME"] = launch_session->output_name;
     _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session->width);
     _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
     _env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session->fps);
@@ -264,6 +360,26 @@ namespace proc {
 
     _app_launch_time = std::chrono::steady_clock::now();
 
+    if (_app.app_streaming) {
+      std::string error_message;
+      auto mode = resolve_app_streaming_mode(_app, *launch_session, error_message);
+      if (!mode) {
+        BOOST_LOG(error) << error_message;
+        return -1;
+      }
+
+      auto request = make_app_streaming_request(_app, *mode);
+      auto root_process_id = _process.valid() ? (std::uint32_t) _process.id() : 0;
+      if (!app_streaming::attach_prepared_session(root_process_id, request, error_message)) {
+        BOOST_LOG(error) << "Failed to attach app window to app-streaming display: "sv << error_message;
+        return -1;
+      }
+      if (!app_streaming::commit_prepared_session(error_message)) {
+        BOOST_LOG(error) << "Failed to commit app-streaming session: "sv << error_message;
+        return -1;
+      }
+    }
+
     fg.disable();
 
     return 0;
@@ -307,6 +423,7 @@ namespace proc {
 
   void proc_t::terminate() {
     std::error_code ec;
+    bool release_app_streaming = _app.app_streaming;
     placebo = false;
     terminate_process_group(_process, _process_group, _app.exit_timeout);
     _process = boost::process::v1::child();
@@ -338,6 +455,10 @@ namespace proc {
     }
 
     _pipe.reset();
+
+    if (release_app_streaming) {
+      app_streaming::end_session();
+    }
 
     bool has_run = _app_id > 0;
 
@@ -377,6 +498,113 @@ namespace proc {
 
   std::string proc_t::get_last_run_app_name() {
     return _app.name;
+  }
+
+  int proc_t::prepare_launch_session(int app_id, rtsp_stream::launch_session_t &launch_session) {
+    if (app_id <= 0) {
+      return 0;
+    }
+
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto &app) {
+      return app.id == std::to_string(app_id);
+    });
+
+    if (iter == _apps.end()) {
+      BOOST_LOG(error) << "Couldn't find app with ID ["sv << app_id << ']';
+      return 404;
+    }
+
+    apply_session_overrides_from_app(*iter, launch_session);
+    if (!iter->app_streaming) {
+      return 0;
+    }
+
+    std::string error_message;
+    auto mode = resolve_app_streaming_mode(*iter, launch_session, error_message);
+    if (!mode) {
+      BOOST_LOG(error) << error_message;
+      return 400;
+    }
+
+    auto request = make_app_streaming_request(*iter, *mode);
+    auto session = app_streaming::prepare_session(request, error_message);
+    if (!session) {
+      BOOST_LOG(error) << "Failed to prepare app-streaming display for ["sv << iter->name << "]: "sv << error_message;
+      return 501;
+    }
+
+    launch_session.output_name = session->output_name;
+    BOOST_LOG(info) << "Prepared app-streaming session ["sv << iter->name
+                    << "] output=["sv << launch_session.output_name
+                    << "] mode="sv << launch_session.width << 'x' << launch_session.height << '@' << launch_session.fps;
+    return 0;
+  }
+
+  int proc_t::prepare_resume_session(rtsp_stream::launch_session_t &launch_session) {
+    if (_app_id <= 0) {
+      return 0;
+    }
+
+    apply_session_overrides_from_app(_app, launch_session);
+    if (!_app.app_streaming) {
+      return 0;
+    }
+
+    auto current_status = app_streaming::status();
+    if (current_status.active_output_name.empty()) {
+      BOOST_LOG(error) << "No active app-streaming output is available for resume."sv;
+      return 501;
+    }
+
+    launch_session.output_name = current_status.active_output_name;
+
+    std::string error_message;
+    auto mode = resolve_app_streaming_mode(_app, launch_session, error_message);
+    if (!mode) {
+      BOOST_LOG(error) << error_message;
+      return 400;
+    }
+
+    if (!app_streaming::update_active_session_mode(*mode, error_message)) {
+      BOOST_LOG(error) << "Failed to update app-streaming display mode for resume: "sv << error_message;
+      return 501;
+    }
+
+    return 0;
+  }
+
+  void proc_t::cancel_prepared_launch() {
+    app_streaming::cancel_prepared_session();
+  }
+
+  int proc_t::apply_session_overrides(int app_id, rtsp_stream::launch_session_t &launch_session) const {
+    if (app_id <= 0) {
+      return 0;
+    }
+
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
+      return app.id == std::to_string(app_id);
+    });
+
+    if (iter == _apps.end()) {
+      BOOST_LOG(error) << "Couldn't find app with ID ["sv << app_id << ']';
+      return 404;
+    }
+
+    apply_session_overrides_from_app(*iter, launch_session);
+    return 0;
+  }
+
+  void proc_t::apply_session_overrides(rtsp_stream::launch_session_t &launch_session) const {
+    if (_app_id <= 0) {
+      return;
+    }
+
+    apply_session_overrides_from_app(_app, launch_session);
+  }
+
+  bool proc_t::should_terminate_on_disconnect() const {
+    return _app_id > 0 && _app.terminate_on_disconnect;
   }
 
   proc_t::~proc_t() {
@@ -650,6 +878,15 @@ namespace proc {
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
+        auto capture_mode = app_node.get_optional<std::string>("capture-mode"s);
+        auto window_match = app_node.get_optional<std::string>("window-match"s);
+        auto stream_resolution = app_node.get_optional<std::string>("stream-resolution"s);
+        auto stream_output_name = app_node.get_optional<std::string>("stream-output-name"s);
+        auto client_display_mode = app_node.get_optional<std::string>("client-display-mode"s);
+        auto client_app_window = app_node.get_optional<bool>("client-app-window"s);
+        auto client_absolute_mouse = app_node.get_optional<bool>("client-absolute-mouse"s);
+        auto show_cursor = app_node.get_optional<bool>("show-cursor"s);
+        auto terminate_on_disconnect = app_node.get_optional<bool>("terminate-on-disconnect"s);
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -719,6 +956,26 @@ namespace proc {
         ctx.auto_detach = auto_detach.value_or(true);
         ctx.wait_all = wait_all.value_or(true);
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(5)};
+        ctx.capture_mode = capture_mode.value_or("");
+        boost::to_lower(ctx.capture_mode);
+        ctx.app_streaming = config::app_streaming.enabled && ctx.capture_mode == "vdd";
+        if (!config::app_streaming.enabled && ctx.capture_mode == "vdd") {
+          BOOST_LOG(warning) << "Ignoring app streaming for ["sv << name << "] because app_streaming_enabled is disabled."sv;
+        }
+        if (!ctx.capture_mode.empty() && !ctx.app_streaming) {
+          BOOST_LOG(warning) << "Ignoring unsupported app capture-mode ["sv << ctx.capture_mode << "] for ["sv << name << "]. Only [vdd] is enabled for app streaming."sv;
+          ctx.capture_mode.clear();
+        }
+        ctx.window_match = ctx.app_streaming ? parse_env_val(this_env, window_match.value_or("")) : "";
+        ctx.stream_resolution = ctx.app_streaming ? stream_resolution.value_or(config::app_streaming.default_resolution) : "";
+        ctx.stream_output_name = ctx.app_streaming ? stream_output_name.value_or("") : "";
+        ctx.client_display_mode = ctx.app_streaming ? client_display_mode.value_or(config::app_streaming.default_client_display_mode) : "";
+        ctx.client_app_window_set = ctx.app_streaming && client_app_window.has_value();
+        ctx.client_app_window = ctx.app_streaming && client_app_window.value_or(config::app_streaming.default_client_app_window);
+        ctx.client_absolute_mouse_set = ctx.app_streaming && client_absolute_mouse.has_value();
+        ctx.client_absolute_mouse = ctx.app_streaming && client_absolute_mouse.value_or(config::app_streaming.default_client_absolute_mouse);
+        ctx.show_cursor = ctx.app_streaming ? show_cursor.value_or(config::app_streaming.default_show_cursor) : true;
+        ctx.terminate_on_disconnect = ctx.app_streaming && terminate_on_disconnect.value_or(config::app_streaming.default_terminate_on_disconnect);
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
         if (ids.count(std::get<0>(possible_ids)) == 0) {

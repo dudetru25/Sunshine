@@ -32,6 +32,10 @@
           <div class="card-body d-flex flex-column">
             <h5 class="card-title mb-2">{{ app.name }}</h5>
             <div class="app-details text-muted small mb-3">
+              <div v-if="isAppStreaming(app)" class="d-flex flex-wrap gap-1 mb-2">
+                <span class="badge text-bg-info">{{ appStreamingTypeLabel(app) }}</span>
+                <span class="badge text-bg-secondary">{{ appStreamingResolutionLabel(app) }}</span>
+              </div>
               <div v-if="app.output" class="text-truncate">
                 <file-text :size="14" class="icon me-1"></file-text>
                 {{ app.output }}
@@ -243,6 +247,70 @@
                  v-model="editForm['exit-timeout']" min="0" placeholder="5" />
           <div id="exitTimeoutHelp" class="form-text">{{ $t('apps.exit_timeout_desc') }}</div>
         </div>
+        <fieldset v-if="platform === 'windows'" class="app-streaming-panel border rounded p-3 mb-3">
+          <legend class="float-none w-auto px-2 h6">{{ $t('apps.app_streaming') }}</legend>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <span class="badge" :class="appStreamingStatusClass">
+              {{ appStreamingStatusLabel }}
+            </span>
+            <button class="btn btn-sm btn-outline-secondary" type="button" @click="fetchAppStreamingStatus">
+              <rotate-ccw :size="14" class="icon"></rotate-ccw>
+              {{ $t('apps.app_streaming_refresh') }}
+            </button>
+            <button class="btn btn-sm btn-outline-danger" type="button" @click="cleanupAppStreaming" :disabled="appStreamingCleanupBusy">
+              <trash-2 :size="14" class="icon"></trash-2>
+              {{ $t('apps.app_streaming_cleanup') }}
+            </button>
+          </div>
+          <div v-if="appStreamingStatus && appStreamingStatus.issues && appStreamingStatus.issues.length" class="alert alert-warning py-2 small">
+            <div v-for="issue in appStreamingStatus.issues" :key="issue">{{ issue }}</div>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="appStreamingEnabled"
+              :checked="editForm['capture-mode'] === 'vdd'"
+              @change="setAppStreamingEnabled($event.target.checked)" />
+            <label class="form-check-label" for="appStreamingEnabled">{{ $t('apps.app_streaming_enable') }}</label>
+          </div>
+          <div v-if="editForm['capture-mode'] === 'vdd'" class="row g-3">
+            <div class="col-12 col-lg-6">
+              <label for="appWindowMatch" class="form-label">{{ $t('apps.app_streaming_window_match') }}</label>
+              <input type="text" class="form-control" id="appWindowMatch" v-model="editForm['window-match']" :placeholder="editForm.name" />
+            </div>
+            <div class="col-12 col-lg-6">
+              <label for="appStreamResolution" class="form-label">{{ $t('apps.app_streaming_resolution') }}</label>
+              <input type="text" class="form-control monospace" id="appStreamResolution" v-model="editForm['stream-resolution']" placeholder="client" />
+              <div class="form-text">{{ $t('apps.app_streaming_resolution_desc') }}</div>
+            </div>
+            <div class="col-12 col-lg-6">
+              <label for="appClientDisplayMode" class="form-label">{{ $t('apps.app_streaming_client_mode') }}</label>
+              <select id="appClientDisplayMode" class="form-select" v-model="editForm['client-display-mode']">
+                <option value="windowed">{{ $t('apps.app_streaming_client_windowed') }}</option>
+                <option value="borderless">{{ $t('apps.app_streaming_client_borderless') }}</option>
+                <option value="fullscreen">{{ $t('apps.app_streaming_client_fullscreen') }}</option>
+              </select>
+            </div>
+            <div class="col-12 col-lg-6 d-flex flex-column gap-2">
+              <Checkbox id="appClientWindow"
+                        label="apps.app_streaming_client_window"
+                        desc=""
+                        v-model="editForm['client-app-window']"
+                        default="false"
+              ></Checkbox>
+              <Checkbox id="appAbsoluteMouse"
+                        label="apps.app_streaming_absolute_mouse"
+                        desc=""
+                        v-model="editForm['client-absolute-mouse']"
+                        default="true"
+              ></Checkbox>
+              <Checkbox id="appTerminateDisconnect"
+                        label="apps.app_streaming_terminate_disconnect"
+                        desc=""
+                        v-model="editForm['terminate-on-disconnect']"
+                        default="false"
+              ></Checkbox>
+            </div>
+          </div>
+        </fieldset>
         <div class="mb-3">
           <label for="appImagePath" class="form-label">{{ $t('apps.image') }}</label>
           <div class="input-group">
@@ -548,7 +616,33 @@
         fileBrowserError: "",
         fileBrowserSelectedPath: "",
         fileBrowserTypedPath: "",
+        appStreamingStatus: null,
+        appStreamingCleanupBusy: false,
+        appStreamingDefaults: {
+          resolution: "client",
+          clientDisplayMode: "windowed",
+          clientAppWindow: true,
+          clientAbsoluteMouse: true,
+          terminateOnDisconnect: false,
+        },
       };
+    },
+    computed: {
+      appStreamingStatusLabel() {
+        if (!this.appStreamingStatus) return this.$t('_common.loading');
+        if (!this.appStreamingStatus.supported) return this.$t('apps.app_streaming_unsupported');
+        if (this.appStreamingStatus.foreign_provider_detected) return this.$t('apps.app_streaming_blocked');
+        if (!this.appStreamingStatus.provider_available) return this.$t('apps.app_streaming_unavailable');
+        if (this.appStreamingStatus.active_session) return this.$t('apps.app_streaming_active');
+        return this.$t('apps.app_streaming_ready');
+      },
+      appStreamingStatusClass() {
+        if (!this.appStreamingStatus) return 'text-bg-secondary';
+        if (!this.appStreamingStatus.supported || this.appStreamingStatus.foreign_provider_detected || !this.appStreamingStatus.provider_available) {
+          return 'text-bg-warning';
+        }
+        return this.appStreamingStatus.active_session ? 'text-bg-primary' : 'text-bg-success';
+      },
     },
     created() {
       fetch("./api/apps")
@@ -558,9 +652,20 @@
           this.apps = r.apps;
         });
 
-      fetch("./api/config")
+      fetch("./api/config/effective")
         .then(r => r.json())
-        .then(r => this.platform = r.platform);
+        .then(r => {
+          this.platform = r.platform;
+          const config = r.config || r;
+          this.appStreamingDefaults = {
+            resolution: config.app_streaming_default_resolution || "client",
+            clientDisplayMode: config.app_streaming_default_client_display_mode || "windowed",
+            clientAppWindow: config.app_streaming_default_client_app_window === true || config.app_streaming_default_client_app_window === "enabled",
+            clientAbsoluteMouse: config.app_streaming_default_client_absolute_mouse === true || config.app_streaming_default_client_absolute_mouse === "enabled",
+            terminateOnDisconnect: config.app_streaming_default_terminate_on_disconnect === true || config.app_streaming_default_terminate_on_disconnect === "enabled",
+          };
+          if (this.platform === 'windows') this.fetchAppStreamingStatus();
+        });
     },
     methods: {
       newApp() {
@@ -576,7 +681,14 @@
           "exit-timeout": 5,
           "prep-cmd": [],
           detached: [],
-          "image-path": ""
+          "image-path": "",
+          "capture-mode": "",
+          "window-match": "",
+          "stream-resolution": this.appStreamingDefaults.resolution,
+          "client-display-mode": this.appStreamingDefaults.clientDisplayMode,
+          "client-app-window": this.appStreamingDefaults.clientAppWindow,
+          "client-absolute-mouse": this.appStreamingDefaults.clientAbsoluteMouse,
+          "terminate-on-disconnect": this.appStreamingDefaults.terminateOnDisconnect
         };
         this.editForm.index = -1;
         this.showEditForm = true;
@@ -602,6 +714,7 @@
         if (this.editForm["exit-timeout"] === undefined) {
           this.editForm["exit-timeout"] = 5;
         }
+        this.ensureAppStreamingDefaults();
         this.showEditForm = true;
       },
       showDeleteForm(id) {
@@ -807,7 +920,69 @@
           this.editForm.detached[index] = path;
         });
       },
+      isAppStreaming(app) {
+        return app && app['capture-mode'] === 'vdd';
+      },
+      appStreamingTypeLabel(app) {
+        if (!this.isAppStreaming(app)) return this.$t('apps.app_streaming_type_desktop');
+        return app['client-app-window'] ? this.$t('apps.app_streaming_type_app_window') : this.$t('apps.app_streaming_type_stream');
+      },
+      appStreamingResolutionLabel(app) {
+        const resolution = (app && app['stream-resolution']) || 'client';
+        return resolution === 'client' ? this.$t('apps.app_streaming_resolution_client') : resolution;
+      },
+      ensureAppStreamingDefaults() {
+        if (this.editForm["capture-mode"] === undefined) this.editForm["capture-mode"] = "";
+        if (this.editForm["window-match"] === undefined) this.editForm["window-match"] = "";
+        if (this.editForm["stream-resolution"] === undefined || this.editForm["stream-resolution"] === "") this.editForm["stream-resolution"] = this.appStreamingDefaults.resolution;
+        if (this.editForm["client-display-mode"] === undefined || this.editForm["client-display-mode"] === "") this.editForm["client-display-mode"] = this.appStreamingDefaults.clientDisplayMode;
+        if (this.editForm["client-app-window"] === undefined) this.editForm["client-app-window"] = this.appStreamingDefaults.clientAppWindow;
+        if (this.editForm["client-absolute-mouse"] === undefined) this.editForm["client-absolute-mouse"] = this.appStreamingDefaults.clientAbsoluteMouse;
+        if (this.editForm["terminate-on-disconnect"] === undefined) this.editForm["terminate-on-disconnect"] = this.appStreamingDefaults.terminateOnDisconnect;
+      },
+      setAppStreamingEnabled(enabled) {
+        this.ensureAppStreamingDefaults();
+        this.editForm["capture-mode"] = enabled ? "vdd" : "";
+      },
+      normalizeAppStreamingForm() {
+        if (this.editForm["capture-mode"] !== "vdd") {
+          delete this.editForm["capture-mode"];
+          delete this.editForm["window-match"];
+          delete this.editForm["stream-resolution"];
+          delete this.editForm["client-display-mode"];
+          delete this.editForm["client-app-window"];
+          delete this.editForm["client-absolute-mouse"];
+          delete this.editForm["show-cursor"];
+          delete this.editForm["terminate-on-disconnect"];
+          delete this.editForm["stream-output-name"];
+          return;
+        }
+
+        this.ensureAppStreamingDefaults();
+        if (this.editForm["window-match"] === "") delete this.editForm["window-match"];
+        if (this.editForm["stream-resolution"] === this.appStreamingDefaults.resolution) delete this.editForm["stream-resolution"];
+        if (this.editForm["client-display-mode"] === this.appStreamingDefaults.clientDisplayMode) delete this.editForm["client-display-mode"];
+        if (this.editForm["client-app-window"] === this.appStreamingDefaults.clientAppWindow) delete this.editForm["client-app-window"];
+        if (this.editForm["client-absolute-mouse"] === this.appStreamingDefaults.clientAbsoluteMouse) delete this.editForm["client-absolute-mouse"];
+        delete this.editForm["show-cursor"];
+        if (this.editForm["terminate-on-disconnect"] === this.appStreamingDefaults.terminateOnDisconnect) delete this.editForm["terminate-on-disconnect"];
+      },
+      fetchAppStreamingStatus() {
+        fetch("./api/app-streaming/status")
+          .then(r => r.json())
+          .then(r => this.appStreamingStatus = r.app_streaming);
+      },
+      cleanupAppStreaming() {
+        this.appStreamingCleanupBusy = true;
+        apiFetch("./api/app-streaming/cleanup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }).then(r => r.json())
+          .then(r => this.appStreamingStatus = r.app_streaming)
+          .finally(() => this.appStreamingCleanupBusy = false);
+      },
       save() {
+        this.normalizeAppStreamingForm();
         this.editForm["image-path"] = this.editForm["image-path"].toString().replace(/"/g, '');
         apiFetch("./api/apps", {
           method: "POST",

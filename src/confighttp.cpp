@@ -29,7 +29,9 @@
 #endif
 
 // local includes
+#include "app_streaming.h"
 #include "config.h"
+#include "config_schema.h"
 #include "confighttp.h"
 #include "crypto.h"
 #include "display_device.h"
@@ -37,6 +39,7 @@
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
+#include "module_registry.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
@@ -609,7 +612,11 @@ namespace confighttp {
         "exclude-global-prep-cmd",
         "elevated",
         "auto-detach",
-        "wait-all"
+        "wait-all",
+        "client-app-window",
+        "client-absolute-mouse",
+        "show-cursor",
+        "terminate-on-disconnect"
       };
 
       // List of keys to convert to integers
@@ -769,6 +776,223 @@ namespace confighttp {
     nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);
+  }
+
+  nlohmann::json appStreamingStatusToJson(const app_streaming::status_t &status) {
+    nlohmann::json tree;
+    tree["supported"] = status.supported;
+    tree["enabled"] = config::app_streaming.enabled;
+    tree["provider"] = status.provider;
+    tree["configured_provider"] = config::app_streaming.provider;
+    tree["provider_available"] = status.provider_available;
+    tree["foreign_provider_detected"] = status.foreign_provider_detected;
+    tree["active_session"] = status.active_session;
+    tree["active_output_name"] = status.active_output_name;
+    tree["owner_process_id"] = status.owner_process_id;
+    tree["issues"] = status.issues;
+    tree["owned_outputs"] = status.owned_outputs;
+    return tree;
+  }
+
+  void getAppStreamingStatus(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["app_streaming"] = appStreamingStatusToJson(app_streaming::status());
+    send_response(response, output_tree);
+  }
+
+  void cleanupAppStreaming(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::string error;
+    nlohmann::json output_tree;
+    output_tree["status"] = app_streaming::cleanup_owned_displays(error);
+    output_tree["error"] = error;
+    output_tree["app_streaming"] = appStreamingStatusToJson(app_streaming::status());
+    send_response(response, output_tree);
+  }
+
+  void discoverAppStreamingApps(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json apps = nlohmann::json::array();
+    for (const auto &app : app_streaming::discover_launchable_apps()) {
+      nlohmann::json node;
+      node["name"] = app.name;
+      node["cmd"] = app.cmd;
+      node["working-dir"] = app.working_dir;
+      apps.push_back(std::move(node));
+    }
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["apps"] = apps;
+    send_response(response, output_tree);
+  }
+
+  nlohmann::json moduleActionResultToJson(const modules::action_result_t &result) {
+    nlohmann::json output_tree = result.data.is_object() ? result.data : nlohmann::json::object();
+    output_tree["status"] = result.status;
+    if (!result.error.empty()) {
+      output_tree["error"] = result.error;
+    }
+    return output_tree;
+  }
+
+  void doctorAppStreaming(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    send_response(response, moduleActionResultToJson(modules::invoke_action("app_streaming", "doctor")));
+  }
+
+  nlohmann::json readJsonBody(const req_https_t &request) {
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    if (ss.str().empty()) {
+      return nlohmann::json::object();
+    }
+    return nlohmann::json::parse(ss.str());
+  }
+
+  void getModules(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["modules"] = modules::list_json();
+    send_response(response, output_tree);
+  }
+
+  void getModule(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    const auto module_id = request->path_match[1].str();
+    if (!modules::exists(module_id)) {
+      bad_request(response, request, "Unknown module");
+      return;
+    }
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["module"] = modules::module_json(module_id);
+    send_response(response, output_tree);
+  }
+
+  void getModuleSettings(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    const auto module_id = request->path_match[1].str();
+    if (!modules::exists(module_id)) {
+      bad_request(response, request, "Unknown module");
+      return;
+    }
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["module"] = module_id;
+    output_tree["settings"] = modules::settings_json(module_id);
+    send_response(response, output_tree);
+  }
+
+  void saveModuleSettings(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+    try {
+      const auto module_id = request->path_match[1].str();
+      auto result = modules::update_settings(module_id, readJsonBody(request));
+      send_response(response, moduleActionResultToJson(result));
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "SaveModuleSettings: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void getModuleActions(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+    const auto module_id = request->path_match[1].str();
+    if (!modules::exists(module_id)) {
+      bad_request(response, request, "Unknown module");
+      return;
+    }
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["module"] = module_id;
+    output_tree["actions"] = modules::actions_json(module_id);
+    send_response(response, output_tree);
+  }
+
+  void invokeModuleAction(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+    try {
+      const auto module_id = request->path_match[1].str();
+      const auto action = request->path_match[2].str();
+      const auto payload = readJsonBody(request);
+      auto result = modules::invoke_action(module_id, action, payload);
+      send_response(response, moduleActionResultToJson(result));
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "InvokeModuleAction: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
   }
 
   /**
@@ -1001,6 +1225,34 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void getConfigSchema(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["schema"] = config_schema::schema_json();
+    send_response(response, output_tree);
+  }
+
+  void getEffectiveConfig(const resp_https_t &response, const req_https_t &request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["platform"] = SUNSHINE_PLATFORM;
+    output_tree["version"] = PROJECT_VERSION;
+    output_tree["config"] = config_schema::effective_config_json();
+    send_response(response, output_tree);
+  }
+
   /**
    * @brief Get the locale setting. This endpoint does not require authentication.
    * @param response The HTTP response object.
@@ -1049,27 +1301,72 @@ namespace confighttp {
 
     print_req(request);
 
-    std::stringstream ss;
-    ss << request->content.rdbuf();
     try {
-      // TODO: Input Validation
-      std::stringstream config_stream;
       nlohmann::json output_tree;
-      nlohmann::json input_tree = nlohmann::json::parse(ss);
-      for (const auto &[k, v] : input_tree.items()) {
-        if (v.is_null() || (v.is_string() && v.get<std::string>().empty())) {
-          continue;
-        }
-
-        // v.dump() will dump valid json, which we do not want for strings in the config, right now
-        // we should migrate the config file to straight JSON and get rid of all this nonsense
-        config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
+      const auto input_tree = readJsonBody(request);
+      std::string error;
+      if (!config_schema::write_config(input_tree, true, error)) {
+        bad_request(response, request, error);
+        return;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
       output_tree["status"] = true;
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "SaveConfig: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void patchConfig(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string client_id = get_client_id(request);
+    if (!validate_csrf_token(response, request, client_id)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      const auto input_tree = readJsonBody(request);
+      std::string error;
+      nlohmann::json output_tree;
+      if (!config_schema::patch_config(input_tree, true, error)) {
+        bad_request(response, request, error);
+        return;
+      }
+      output_tree["status"] = true;
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "PatchConfig: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void validateConfig(const resp_https_t &response, const req_https_t &request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    try {
+      std::vector<std::string> errors;
+      const auto input_tree = readJsonBody(request);
+      nlohmann::json output_tree;
+      output_tree["status"] = config_schema::validate_config(input_tree, errors);
+      output_tree["errors"] = errors;
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "ValidateConfig: "sv << e.what();
       bad_request(response, request, e.what());
     }
   }
@@ -1766,12 +2063,26 @@ namespace confighttp {
     server.resource["^/api/apps$"]["POST"] = saveApp;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
+    server.resource["^/api/app-streaming/status$"]["GET"] = getAppStreamingStatus;
+    server.resource["^/api/app-streaming/cleanup$"]["POST"] = cleanupAppStreaming;
+    server.resource["^/api/app-streaming/discover$"]["GET"] = discoverAppStreamingApps;
+    server.resource["^/api/app-streaming/doctor$"]["GET"] = doctorAppStreaming;
+    server.resource["^/api/modules$"]["GET"] = getModules;
+    server.resource["^/api/modules/([^/]+)$"]["GET"] = getModule;
+    server.resource["^/api/modules/([^/]+)/settings$"]["GET"] = getModuleSettings;
+    server.resource["^/api/modules/([^/]+)/settings$"]["POST"] = saveModuleSettings;
+    server.resource["^/api/modules/([^/]+)/actions$"]["GET"] = getModuleActions;
+    server.resource["^/api/modules/([^/]+)/actions/([^/]+)$"]["POST"] = invokeModuleAction;
     server.resource["^/api/clients/list$"]["GET"] = getClients;
     server.resource["^/api/clients/unpair$"]["POST"] = unpair;
     server.resource["^/api/clients/unpair-all$"]["POST"] = unpairAll;
     server.resource["^/api/clients/update$"]["POST"] = updateClient;
     server.resource["^/api/config$"]["GET"] = getConfig;
     server.resource["^/api/config$"]["POST"] = saveConfig;
+    server.resource["^/api/config$"]["PATCH"] = patchConfig;
+    server.resource["^/api/config/schema$"]["GET"] = getConfigSchema;
+    server.resource["^/api/config/effective$"]["GET"] = getEffectiveConfig;
+    server.resource["^/api/config/validate$"]["POST"] = validateConfig;
     server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/covers/([0-9]+)$"]["GET"] = getCover;
     server.resource["^/api/covers/upload$"]["POST"] = uploadCover;

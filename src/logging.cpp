@@ -263,6 +263,11 @@ namespace logging {
       << "    --help                    | print help"sv << std::endl
       << "    --creds username password | set user credentials for the Web manager"sv << std::endl
       << "    --version                 | print the version of sunshine"sv << std::endl
+      << "    --modules list [--json]   | list built-in Sunshine modules"sv << std::endl
+      << "    --module id command       | run module status, settings, actions, doctor, or action commands"sv << std::endl
+      << "    --config command          | inspect or edit explicit Sunshine configuration"sv << std::endl
+      << "    --app-streaming-status    | show app-streaming module status"sv << std::endl
+      << "    --app-streaming-cleanup   | cleanup stale app-streaming displays"sv << std::endl
       << std::endl
       << "    flags"sv << std::endl
       << "        -0 | Read PIN from stdin"sv << std::endl

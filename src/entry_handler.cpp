@@ -8,13 +8,19 @@
 #include <iostream>
 #include <thread>
 
+// lib includes
+#include <nlohmann/json.hpp>
+
 // local includes
 #include "config.h"
+#include "config_schema.h"
 #include "confighttp.h"
 #include "entry_handler.h"
+#include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
+#include "module_registry.h"
 #include "network.h"
 #include "platform/common.h"
 
@@ -35,8 +41,76 @@ void launch_ui(const std::optional<std::string> &path) {
 }
 
 namespace args {
+  namespace {
+    bool has_arg(int argc, char *argv[], std::string_view arg) {
+      for (int x = 0; x < argc; ++x) {
+        if (std::string_view {argv[x]} == arg) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    void print_json(const nlohmann::json &value) {
+      std::cout << value.dump(2) << std::endl;
+    }
+
+    int print_action_result(const ::modules::action_result_t &result, bool json_output) {
+      if (json_output) {
+        auto output = result.data.is_object() ? result.data : nlohmann::json::object();
+        output["status"] = result.status;
+        if (!result.error.empty()) {
+          output["error"] = result.error;
+        }
+        print_json(output);
+      } else if (!result.status) {
+        std::cerr << result.error << std::endl;
+      } else if (result.data.contains("app_streaming")) {
+        const auto &status = result.data["app_streaming"];
+        std::cout << "App streaming: " << (status.value("enabled", false) ? "enabled" : "disabled") << std::endl;
+        std::cout << "Provider: " << status.value("provider", "none") << std::endl;
+        std::cout << "Provider available: " << (status.value("provider_available", false) ? "yes" : "no") << std::endl;
+        std::cout << "Foreign provider detected: " << (status.value("foreign_provider_detected", false) ? "yes" : "no") << std::endl;
+        std::cout << "Active session: " << (status.value("active_session", false) ? "yes" : "no") << std::endl;
+        if (status.contains("issues")) {
+          for (const auto &issue : status["issues"]) {
+            std::cout << "Issue: " << issue.get<std::string>() << std::endl;
+          }
+        }
+      } else {
+        std::cout << "OK" << std::endl;
+      }
+
+      return result.status ? 0 : 1;
+    }
+
+    nlohmann::json current_config_file_json() {
+      nlohmann::json values = nlohmann::json::object();
+      auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+      for (auto &[key, value] : vars) {
+        values[key] = value;
+      }
+      return values;
+    }
+
+    void print_config_as_conf(const nlohmann::json &values) {
+      for (const auto &definition : config_schema::options()) {
+        if (!values.contains(definition.key)) {
+          continue;
+        }
+        std::cout << definition.key << " = " << config_schema::value_to_config_string(values[definition.key]) << std::endl;
+      }
+    }
+
+    nlohmann::json single_setting_patch(std::string_view key, std::string_view value) {
+      nlohmann::json patch = nlohmann::json::object();
+      patch[std::string {key}] = std::string {value};
+      return patch;
+    }
+  }  // namespace
+
   int creds(const char *name, int argc, char *argv[]) {
-    if (argc < 2 || argv[0] == "help"sv || argv[1] == "help"sv) {
+    if (argc < 2 || std::string_view {argv[0]} == "help"sv || std::string_view {argv[1]} == "help"sv) {
       help(name);
     }
 
@@ -53,6 +127,191 @@ namespace args {
   int version() {
     // version was already logged at startup
     return 0;
+  }
+
+  int modules(const char *name, int argc, char *argv[]) {
+    const bool json_output = has_arg(argc, argv, "--json");
+    auto module_list = ::modules::list_json();
+    if (json_output) {
+      print_json({{"status", true}, {"modules", module_list}});
+      return 0;
+    }
+
+    for (const auto &module : module_list) {
+      std::cout << module.value("id", "") << "\t" << module.value("name", "") << "\t"
+                << (module.value("enabled", false) ? "enabled" : "disabled") << std::endl;
+    }
+    return 0;
+  }
+
+  int module(const char *name, int argc, char *argv[]) {
+    const bool json_output = has_arg(argc, argv, "--json");
+    const bool force = has_arg(argc, argv, "--force");
+    if (argc < 2 || std::string_view {argv[0]} == "help"sv) {
+      std::cout << "Usage: " << name << " --module <module_id> <status|settings|actions|doctor|action> [action_id] [--json] [--force]" << std::endl;
+      return argc < 2 ? 1 : 0;
+    }
+
+    const std::string module_id = argv[0];
+    const std::string command = argv[1];
+    if (!::modules::exists(module_id)) {
+      std::cerr << "Unknown module: " << module_id << std::endl;
+      return 1;
+    }
+
+    if (command == "status"sv) {
+      return print_action_result(::modules::invoke_action(module_id, "status"), json_output);
+    }
+    if (command == "settings"sv) {
+      auto settings = ::modules::settings_json(module_id);
+      if (json_output) {
+        print_json({{"status", true}, {"module", module_id}, {"settings", settings}});
+      } else {
+        print_config_as_conf(settings["values"]);
+      }
+      return 0;
+    }
+    if (command == "actions"sv) {
+      auto actions = ::modules::actions_json(module_id);
+      if (json_output) {
+        print_json({{"status", true}, {"module", module_id}, {"actions", actions}});
+      } else {
+        for (const auto &action : actions) {
+          std::cout << action.value("id", "") << "\t" << action.value("description", "") << std::endl;
+        }
+      }
+      return 0;
+    }
+    if (command == "doctor"sv) {
+      return print_action_result(::modules::invoke_action(module_id, "doctor"), json_output);
+    }
+    if (command == "action"sv && argc >= 3) {
+      return print_action_result(::modules::invoke_action(module_id, argv[2], {}, force), json_output);
+    }
+
+    std::cerr << "Unknown module command: " << command << std::endl;
+    return 1;
+  }
+
+  int app_streaming_status(const char *name, int argc, char *argv[]) {
+    return print_action_result(::modules::invoke_action("app_streaming", "status"), has_arg(argc, argv, "--json"));
+  }
+
+  int app_streaming_cleanup(const char *name, int argc, char *argv[]) {
+    return print_action_result(::modules::invoke_action("app_streaming", "cleanup", {}, has_arg(argc, argv, "--force")), has_arg(argc, argv, "--json"));
+  }
+
+  int app_streaming_discover(const char *name, int argc, char *argv[]) {
+    const auto result = ::modules::invoke_action("app_streaming", "discover");
+    if (has_arg(argc, argv, "--json")) {
+      return print_action_result(result, true);
+    }
+
+    if (!result.status) {
+      std::cerr << result.error << std::endl;
+      return 1;
+    }
+    for (const auto &app : result.data["apps"]) {
+      std::cout << app.value("name", "") << "\t" << app.value("cmd", "") << std::endl;
+    }
+    return 0;
+  }
+
+  int app_streaming_doctor(const char *name, int argc, char *argv[]) {
+    const auto result = ::modules::invoke_action("app_streaming", "doctor");
+    if (has_arg(argc, argv, "--json")) {
+      return print_action_result(result, true);
+    }
+    if (!result.status) {
+      std::cerr << result.error << std::endl;
+      return 1;
+    }
+    print_action_result(::modules::invoke_action("app_streaming", "status"), false);
+    for (const auto &diagnostic : result.data["diagnostics"]) {
+      std::cout << "Diagnostic: " << diagnostic.get<std::string>() << std::endl;
+    }
+    return 0;
+  }
+
+  int config_cmd(const char *name, int argc, char *argv[]) {
+    const bool json_output = has_arg(argc, argv, "--json");
+    const bool explicit_output = has_arg(argc, argv, "--explicit");
+
+    if (argc < 1 || std::string_view {argv[0]} == "help"sv) {
+      std::cout << "Usage: " << name << " --config <list|get|set|unset|export|validate> [key] [value] [--explicit] [--json|--conf]" << std::endl;
+      return argc < 1 ? 1 : 0;
+    }
+
+    const std::string command = argv[0];
+    if (command == "list"sv || command == "export"sv) {
+      const auto values = explicit_output || command == "export"sv ? config_schema::effective_config_json() : current_config_file_json();
+      if (json_output) {
+        print_json({{"status", true}, {"config", values}});
+      } else {
+        print_config_as_conf(values);
+      }
+      return 0;
+    }
+
+    if (command == "get"sv && argc >= 2) {
+      const std::string key = argv[1];
+      if (!config_schema::is_known_key(key)) {
+        std::cerr << "Unknown configurable option: " << key << std::endl;
+        return 1;
+      }
+      auto values = config_schema::effective_config_json();
+      if (json_output) {
+        print_json({{"status", true}, {"key", key}, {"value", values[key]}});
+      } else {
+        std::cout << config_schema::value_to_config_string(values[key]) << std::endl;
+      }
+      return 0;
+    }
+
+    if (command == "set"sv && argc >= 3) {
+      std::string error;
+      if (!config_schema::patch_config(single_setting_patch(argv[1], argv[2]), true, error)) {
+        std::cerr << error << std::endl;
+        return 1;
+      }
+      if (json_output) {
+        print_json({{"status", true}});
+      }
+      return 0;
+    }
+
+    if (command == "unset"sv && argc >= 2) {
+      nlohmann::json patch = nlohmann::json::object();
+      patch[argv[1]] = nullptr;
+      std::string error;
+      if (!config_schema::patch_config(patch, true, error)) {
+        std::cerr << error << std::endl;
+        return 1;
+      }
+      if (json_output) {
+        print_json({{"status", true}});
+      }
+      return 0;
+    }
+
+    if (command == "validate"sv) {
+      std::vector<std::string> errors;
+      auto values = current_config_file_json();
+      const bool ok = config_schema::validate_config(values, errors);
+      if (json_output) {
+        print_json({{"status", ok}, {"errors", errors}});
+      } else if (ok) {
+        std::cout << "Config is valid" << std::endl;
+      } else {
+        for (const auto &error : errors) {
+          std::cerr << error << std::endl;
+        }
+      }
+      return ok ? 0 : 1;
+    }
+
+    std::cerr << "Unknown or incomplete config command: " << command << std::endl;
+    return 1;
   }
 
 #ifdef _WIN32

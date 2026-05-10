@@ -49,6 +49,18 @@ curl -u user:pass -H "X-CSRF-Token: your_token_here" \
 ## DELETE /api/apps/{index}
 @copydoc confighttp::deleteApp()
 
+## GET /api/app-streaming/status
+Returns the app-streaming module status, provider availability, active output, owned outputs, and diagnostics.
+
+## POST /api/app-streaming/cleanup
+Releases stale module-owned app-streaming displays when no app-streaming session is active.
+
+## GET /api/app-streaming/discover
+Returns launchable Windows Start Menu apps that can be used to create app-streaming entries.
+
+## GET /api/app-streaming/doctor
+Returns app-streaming diagnostics and suggested fixes.
+
 ## GET /api/browse
 @copydoc confighttp::browseDirectory()
 
@@ -72,6 +84,36 @@ curl -u user:pass -H "X-CSRF-Token: your_token_here" \
 
 ## POST /api/config
 @copydoc confighttp::saveConfig()
+
+## PATCH /api/config
+Patches known Sunshine configuration settings and writes an explicit config file.
+
+## GET /api/config/schema
+Returns the known Sunshine configuration schema, including module ownership and runtime mutability metadata.
+
+## GET /api/config/effective
+Returns the effective Sunshine config with defaults filled in.
+
+## POST /api/config/validate
+Validates a JSON config payload against the known schema.
+
+## GET /api/modules
+Returns registered Sunshine modules.
+
+## GET /api/modules/{module_id}
+Returns one registered module with status details.
+
+## GET /api/modules/{module_id}/settings
+Returns a module's schema and effective settings.
+
+## POST /api/modules/{module_id}/settings
+Patches a module's settings. Settings must belong to that module.
+
+## GET /api/modules/{module_id}/actions
+Returns actions supported by a module.
+
+## POST /api/modules/{module_id}/actions/{action_id}
+Invokes a module action.
 
 ## GET /api/covers/{index}
 @copydoc confighttp::getCover()

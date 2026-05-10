@@ -54,6 +54,14 @@ namespace args {
    */
   int version();
 
+  int modules(const char *name, int argc, char *argv[]);
+  int module(const char *name, int argc, char *argv[]);
+  int app_streaming_status(const char *name, int argc, char *argv[]);
+  int app_streaming_cleanup(const char *name, int argc, char *argv[]);
+  int app_streaming_discover(const char *name, int argc, char *argv[]);
+  int app_streaming_doctor(const char *name, int argc, char *argv[]);
+  int config_cmd(const char *name, int argc, char *argv[]);
+
 #ifdef _WIN32
   /**
    * @brief Restore global NVIDIA control panel settings.

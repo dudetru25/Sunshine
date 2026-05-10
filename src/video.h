@@ -4,6 +4,9 @@
  */
 #pragma once
 
+// standard includes
+#include <string>
+
 // local includes
 #include "input.h"
 #include "platform/common.h"
@@ -43,6 +46,10 @@ namespace video {
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
+
+    bool app_streaming {};  // True when this session is allowed to use app-streaming-only capture settings.
+    bool cursor_visible {true};  // Session-scoped cursor compositing preference for app streams.
+    std::string output_name;  // Session-scoped display output override for app streams.
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

@@ -829,7 +829,12 @@ namespace display_device {
     }
 
     SingleDisplayConfiguration config;
-    config.m_device_id = video_config.output_name;
+    if (session.app_streaming && session.output_name.empty()) {
+      BOOST_LOG(error) << "VDD app streaming requires a session-scoped output name before display configuration."sv;
+      return failed_to_parse_tag_t {};
+    }
+
+    config.m_device_id = session.app_streaming ? session.output_name : video_config.output_name;
     config.m_device_prep = *device_prep;
     config.m_hdr_state = parse_hdr_option(video_config, session);
 
